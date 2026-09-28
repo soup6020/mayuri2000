@@ -70,6 +70,16 @@ func (c *Context) OptUser(name string) (discord.User, bool) {
 	v, ok := c.args[name].(discord.User)
 	return v, ok
 }
+func (c *Context) OptRole(name string) (discord.Role, bool) {
+	v, ok := c.args[name].(discord.Role)
+	return v, ok
+}
+
+// OptChannel returns a Channel option's channel ID.
+func (c *Context) OptChannel(name string) (snowflake.ID, bool) {
+	v, ok := c.args[name].(snowflake.ID)
+	return v, ok
+}
 func (c *Context) OptAttachment(name string) (discord.Attachment, bool) {
 	v, ok := c.args[name].(discord.Attachment)
 	return v, ok

@@ -6,6 +6,8 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/omit"
@@ -20,6 +22,11 @@ const (
 	User
 	Attachment
 	Float
+	// Role accepts a role mention, ID or (for prefix commands) name.
+	Role
+	// Channel accepts a text channel or thread mention, ID or (for prefix
+	// commands) name. Its value is the channel's snowflake.ID.
+	Channel
 )
 
 type Choice struct {
@@ -33,7 +40,7 @@ type Option struct {
 	Type        OptionType
 	Required    bool
 	// Rest makes a prefix invocation consume the remaining raw text for this
-	// option. Only valid for the last String option.
+	// option. Only valid for the last String or Role option.
 	Rest bool
 	// SlashOnly options are never filled from prefix arguments.
 	SlashOnly bool
@@ -43,6 +50,9 @@ type Option struct {
 	Min, Max  *int
 	MaxLength *int
 	Choices   []Choice
+	// Autocomplete suggests values for a String option as the user types a
+	// slash command. It returns at most 25 choices.
+	Autocomplete func(input string) []Choice
 }
 
 type Command struct {
@@ -58,6 +68,42 @@ type Command struct {
 	// Heavy commands are deferred immediately and serialised per guild.
 	Heavy bool
 	Run   func(*Context) error
+
+	// Subcommands turn this command into a group: /name sub ... for slash
+	// commands and "prefix name sub ..." for text. A group has no Options or
+	// Run of its own; its Perms and GuildOnly apply to every subcommand.
+	Subcommands []*Command
+	parent      *Command
+}
+
+// FullName is the command's name including its group, e.g. "rss add".
+func (c *Command) FullName() string {
+	if c.parent != nil {
+		return c.parent.Name + " " + c.Name
+	}
+	return c.Name
+}
+
+// Sub finds a subcommand by name or alias.
+func (c *Command) Sub(name string) (*Command, bool) {
+	name = strings.ToLower(name)
+	for _, s := range c.Subcommands {
+		if s.Name == name || slices.Contains(s.Aliases, name) {
+			return s, true
+		}
+	}
+	return nil, false
+}
+
+// effective returns the permissions, guild restriction and weight of a leaf
+// command, merged with its group's.
+func (c *Command) effective() (discord.Permissions, bool, bool) {
+	perms, guildOnly := c.Perms, c.GuildOnly
+	if c.parent != nil {
+		perms |= c.parent.Perms
+		guildOnly = guildOnly || c.parent.GuildOnly
+	}
+	return perms, guildOnly, c.Heavy
 }
 
 type MenuKind int
@@ -108,15 +154,30 @@ func (c *Command) slashCreate() discord.SlashCommandCreate {
 	if c.Perms != 0 {
 		sc.DefaultMemberPermissions = omit.NewPtr(c.Perms)
 	}
-	// Discord requires required options to come first.
+	if len(c.Subcommands) > 0 {
+		for _, s := range c.Subcommands {
+			sc.Options = append(sc.Options, discord.ApplicationCommandOptionSubCommand{
+				Name: s.Name, Description: s.Description, Options: slashOptions(s.Options),
+			})
+		}
+		return sc
+	}
+	sc.Options = slashOptions(c.Options)
+	return sc
+}
+
+// slashOptions converts options, putting required ones first as Discord
+// requires.
+func slashOptions(opts []Option) []discord.ApplicationCommandOption {
+	var out []discord.ApplicationCommandOption
 	for _, required := range []bool{true, false} {
-		for _, o := range c.Options {
+		for _, o := range opts {
 			if o.Required == required {
-				sc.Options = append(sc.Options, o.slashOption())
+				out = append(out, o.slashOption())
 			}
 		}
 	}
-	return sc
+	return out
 }
 
 func (o Option) slashOption() discord.ApplicationCommandOption {
@@ -139,8 +200,12 @@ func (o Option) slashOption() discord.ApplicationCommandOption {
 		return discord.ApplicationCommandOptionUser{Name: o.Name, Description: o.Description, Required: o.Required}
 	case Attachment:
 		return discord.ApplicationCommandOptionAttachment{Name: o.Name, Description: o.Description, Required: o.Required}
+	case Role:
+		return discord.ApplicationCommandOptionRole{Name: o.Name, Description: o.Description, Required: o.Required}
+	case Channel:
+		return discord.ApplicationCommandOptionChannel{Name: o.Name, Description: o.Description, Required: o.Required, ChannelTypes: TextChannelTypes}
 	default:
-		opt := discord.ApplicationCommandOptionString{Name: o.Name, Description: o.Description, Required: o.Required, MaxLength: o.MaxLength}
+		opt := discord.ApplicationCommandOptionString{Name: o.Name, Description: o.Description, Required: o.Required, MaxLength: o.MaxLength, Autocomplete: o.Autocomplete != nil}
 		for _, c := range o.Choices {
 			opt.Choices = append(opt.Choices, discord.ApplicationCommandOptionChoiceString{Name: c.Name, Value: c.Value})
 		}
@@ -154,4 +219,13 @@ func (m *Menu) create() discord.ApplicationCommandCreate {
 		return discord.UserCommandCreate{Name: m.Name, Contexts: contexts}
 	}
 	return discord.MessageCommandCreate{Name: m.Name, Contexts: contexts}
+}
+
+// TextChannelTypes are the channel types messages can be posted in.
+var TextChannelTypes = []discord.ChannelType{
+	discord.ChannelTypeGuildText,
+	discord.ChannelTypeGuildNews,
+	discord.ChannelTypeGuildPublicThread,
+	discord.ChannelTypeGuildPrivateThread,
+	discord.ChannelTypeGuildNewsThread,
 }

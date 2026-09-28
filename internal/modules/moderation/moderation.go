@@ -13,6 +13,7 @@ import (
 	"github.com/disgoorg/snowflake/v2"
 
 	"mayuri2000/internal/cmd"
+	"mayuri2000/internal/when"
 )
 
 const category = "Moderation"
@@ -373,71 +374,9 @@ func unban(c *cmd.Context) error {
 	return c.Reply(fmt.Sprintf("Unbanned `%s`.", id))
 }
 
-// ParseDuration parses durations like "10m", "1h30m", "2d", "1w" or a bare
-// number of minutes.
-func ParseDuration(s string) (time.Duration, error) {
-	s = strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), " ", ""))
-	if s == "" {
-		return 0, errors.New("empty duration")
-	}
-	if n, err := parseUint(s); err == nil {
-		return time.Duration(n) * time.Minute, nil
-	}
-	units := map[string]time.Duration{
-		"s": time.Second, "sec": time.Second, "secs": time.Second, "second": time.Second, "seconds": time.Second,
-		"m": time.Minute, "min": time.Minute, "mins": time.Minute, "minute": time.Minute, "minutes": time.Minute,
-		"h": time.Hour, "hr": time.Hour, "hrs": time.Hour, "hour": time.Hour, "hours": time.Hour,
-		"d": 24 * time.Hour, "day": 24 * time.Hour, "days": 24 * time.Hour,
-		"w": 7 * 24 * time.Hour, "week": 7 * 24 * time.Hour, "weeks": 7 * 24 * time.Hour,
-	}
-	var total time.Duration
-	for s != "" {
-		i := 0
-		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			i++
-		}
-		if i == 0 {
-			return 0, fmt.Errorf("invalid duration %q", s)
-		}
-		n, err := parseUint(s[:i])
-		if err != nil {
-			return 0, err
-		}
-		s = s[i:]
-		j := 0
-		for j < len(s) && (s[j] < '0' || s[j] > '9') {
-			j++
-		}
-		unit, ok := units[s[:j]]
-		if !ok {
-			return 0, fmt.Errorf("unknown unit %q", s[:j])
-		}
-		s = s[j:]
-		total += time.Duration(n) * unit
-		if total > 365*24*time.Hour {
-			return 0, errors.New("duration too long")
-		}
-	}
-	return total, nil
-}
-
-func parseUint(s string) (int64, error) {
-	var n int64
-	if s == "" || len(s) > 9 {
-		return 0, errors.New("bad number")
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0, errors.New("bad number")
-		}
-		n = n*10 + int64(r-'0')
-	}
-	return n, nil
-}
-
 func timeout(c *cmd.Context) error {
 	u, _ := c.OptUser("user")
-	d, err := ParseDuration(c.String("duration"))
+	d, err := when.ParseDuration(c.String("duration"))
 	if err != nil {
 		return cmd.Errorf("I don't understand that duration. Try something like `10m`, `1h30m` or `2d`.")
 	}

@@ -43,14 +43,20 @@ func Commands() []*cmd.Command {
 		aliasCommand(),
 		serverInfoCommand(),
 		statsCommand(),
+		timeCommand(),
+		timezoneCommand(),
+		userInfoCommand(),
+		roleInfoCommand(),
+		base64Command(),
 	}
 }
 
 func help(c *cmd.Context) error {
 	prefix := c.Registry.Prefix(c.GuildID)
 	if name, ok := c.OptString("command"); ok {
-		name = strings.ToLower(strings.TrimPrefix(name, prefix))
-		command, ok := c.Registry.Lookup(name)
+		name = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(name, prefix)))
+		first, _, _ := strings.Cut(name, " ")
+		command, ok := c.Registry.Lookup(first)
 		if !ok && c.GuildID != nil {
 			if a, isAlias := c.Registry.Store().Alias(*c.GuildID, name); isAlias {
 				return c.Reply(fmt.Sprintf("`%s%s` is an alias for `%s%s`.", prefix, a.Name, prefix, a.Command))
@@ -58,6 +64,17 @@ func help(c *cmd.Context) error {
 		}
 		if !ok {
 			return cmd.Errorf("No command named `%s`.", name)
+		}
+		if len(command.Subcommands) > 0 {
+			if _, subName, hasSub := strings.Cut(name, " "); hasSub {
+				sub, found := command.Sub(strings.TrimSpace(subName))
+				if !found {
+					return cmd.Errorf("`%s` has no subcommand `%s`.", command.Name, strings.TrimSpace(subName))
+				}
+				command = sub
+			} else {
+				return c.ReplyEmbeds(discord.Embed{Title: "/" + command.Name, Description: cmd.GroupUsage(prefix, command)})
+			}
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "%s\n\n`%s`\n", command.Description, cmd.Usage(prefix, command))
@@ -71,7 +88,7 @@ func help(c *cmd.Context) error {
 			}
 			fmt.Fprintf(&b, "• `%s`%s: %s\n", o.Name, req, o.Description)
 		}
-		return c.ReplyEmbeds(discord.Embed{Title: "/" + command.Name, Description: b.String()})
+		return c.ReplyEmbeds(discord.Embed{Title: "/" + command.FullName(), Description: b.String()})
 	}
 
 	var pages []cmd.Page
@@ -110,7 +127,7 @@ func prefix(c *cmd.Context) error {
 	if strings.ContainsAny(newPrefix, " \n\t") {
 		return cmd.Errorf("The prefix can't contain spaces.")
 	}
-	if err := c.Registry.Store().SetPrefix(*c.GuildID, newPrefix); err != nil {
+	if err := c.Registry.Store().SetPrefix(c, *c.GuildID, newPrefix); err != nil {
 		return err
 	}
 	return c.Reply(fmt.Sprintf("Prefix set to `%s`.", c.Registry.Prefix(c.GuildID)))

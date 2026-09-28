@@ -169,7 +169,7 @@ func stats(c *cmd.Context) error {
 	}
 	var allTime int64
 	var allTop strings.Builder
-	if counts, err := c.Registry.Store().CommandCounts(); err == nil {
+	if counts, err := c.Registry.Store().CommandCounts(c); err == nil {
 		for i, cc := range counts {
 			allTime += cc.Count
 			if i < 5 {

@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,6 +70,12 @@ func (r *Registry) Add(cmds ...*Command) {
 				panic("duplicate command name " + name)
 			}
 			r.byName[name] = c
+		}
+		for _, s := range c.Subcommands {
+			s.parent = c
+			if s.Category == "" {
+				s.Category = c.Category
+			}
 		}
 		r.commands = append(r.commands, c)
 	}
@@ -133,6 +141,8 @@ func (r *Registry) OnEvent(event bot.Event) {
 		go r.onApplicationCommand(e)
 	case *events.ComponentInteractionCreate:
 		go r.onComponent(e)
+	case *events.AutocompleteInteractionCreate:
+		go r.onAutocomplete(e)
 	case *events.MessageCreate:
 		go r.onMessage(e)
 	}
@@ -166,7 +176,12 @@ func (r *Registry) onApplicationCommand(e *events.ApplicationCommandInteractionC
 		if !ok {
 			return
 		}
-		c.CommandName = cmd.Name
+		if data.SubCommandName != nil {
+			if cmd, ok = cmd.Sub(*data.SubCommandName); !ok {
+				return
+			}
+		}
+		c.CommandName = cmd.FullName()
 		for _, opt := range cmd.Options {
 			switch opt.Type {
 			case String:
@@ -193,9 +208,21 @@ func (r *Registry) onApplicationCommand(e *events.ApplicationCommandInteractionC
 				if v, ok := data.OptAttachment(opt.Name); ok {
 					c.args[opt.Name] = v
 				}
+			case Role:
+				if v, ok := data.OptRole(opt.Name); ok {
+					if gid := e.GuildID(); gid != nil {
+						v.GuildID = *gid
+					}
+					c.args[opt.Name] = v
+				}
+			case Channel:
+				if v, ok := data.OptChannel(opt.Name); ok {
+					c.args[opt.Name] = v.ID
+				}
 			}
 		}
-		r.run(c, cmd.Heavy, cmd.Perms, cmd.GuildOnly, cmd.Run)
+		perms, guildOnly, heavy := cmd.effective()
+		r.run(c, heavy, perms, guildOnly, cmd.Run)
 
 	case discord.UserCommandInteractionData:
 		m, ok := r.menus[data.CommandName()]
@@ -219,6 +246,48 @@ func (r *Registry) onApplicationCommand(e *events.ApplicationCommandInteractionC
 		c.TargetMessage = &msg
 		r.run(c, m.Heavy, 0, false, m.Run)
 	}
+}
+
+func (r *Registry) onAutocomplete(e *events.AutocompleteInteractionCreate) {
+	defer func() {
+		if p := recover(); p != nil {
+			r.log.Error("panic in autocomplete", "panic", p, "stack", string(debug.Stack()))
+		}
+	}()
+	cmd, ok := r.byName[e.Data.CommandName]
+	if !ok {
+		return
+	}
+	if e.Data.SubCommandName != nil {
+		if cmd, ok = cmd.Sub(*e.Data.SubCommandName); !ok {
+			return
+		}
+	}
+	focused := e.Data.Focused()
+	var input string
+	_ = json.Unmarshal(focused.Value, &input)
+	var choices []discord.AutocompleteChoice
+	for _, o := range cmd.Options {
+		if o.Name != focused.Name || o.Autocomplete == nil {
+			continue
+		}
+		for _, ch := range o.Autocomplete(input) {
+			if len(choices) == 25 {
+				break
+			}
+			choices = append(choices, discord.AutocompleteChoiceString{Name: truncateRunes(ch.Name, 100), Value: truncateRunes(ch.Value, 100)})
+		}
+	}
+	if err := e.AutocompleteResult(choices); err != nil {
+		r.log.Debug("autocomplete response failed", "command", cmd.Name, "err", err)
+	}
+}
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 func (r *Registry) onComponent(e *events.ComponentInteractionCreate) {
@@ -251,13 +320,27 @@ func (r *Registry) onMessage(e *events.MessageCreate) {
 	if !ok {
 		return
 	}
+	if len(cmd.Subcommands) > 0 {
+		var subName string
+		subName, argText = splitCommand(argText)
+		sub, found := cmd.Sub(subName)
+		if !found {
+			_, _ = e.Client().Rest.CreateMessage(msg.ChannelID, discord.MessageCreate{
+				Content:          GroupUsage(prefix, cmd),
+				AllowedMentions:  noMentions,
+				MessageReference: &discord.MessageReference{MessageID: &msg.ID, FailIfNotExists: false},
+			})
+			return
+		}
+		cmd = sub
+	}
 
 	resp := &messageResponder{client: e.Client(), channelID: msg.ChannelID, messageID: msg.ID}
 	c := &Context{
 		Context:       context.Background(),
 		Client:        e.Client(),
 		Registry:      r,
-		CommandName:   cmd.Name,
+		CommandName:   cmd.FullName(),
 		Prefix:        prefix,
 		GuildID:       msg.GuildID,
 		ChannelID:     msg.ChannelID,
@@ -300,7 +383,8 @@ func (r *Registry) onMessage(e *events.MessageCreate) {
 			atts = atts[1:]
 		}
 	}
-	r.run(c, cmd.Heavy, cmd.Perms, cmd.GuildOnly, cmd.Run)
+	perms, guildOnly, heavy := cmd.effective()
+	r.run(c, heavy, perms, guildOnly, cmd.Run)
 }
 
 // Resolve finds the command for prefix-stripped input, expanding guild
@@ -393,6 +477,26 @@ func (r *Registry) convert(c *Context, a rawArg) (any, error) {
 			return nil, fmt.Errorf("`%s` is not a user mention or ID", a.value)
 		}
 		return r.user(c.Client, c.GuildID, id)
+	case Channel:
+		if c.GuildID == nil {
+			return nil, fmt.Errorf("channels only exist in servers")
+		}
+		var channels []discord.GuildChannel
+		for ch := range c.Client.Caches.ChannelsForGuild(*c.GuildID) {
+			if slices.Contains(TextChannelTypes, ch.Type()) {
+				channels = append(channels, ch)
+			}
+		}
+		return FindChannel(channels, a.value)
+	case Role:
+		if c.GuildID == nil {
+			return nil, fmt.Errorf("roles only exist in servers")
+		}
+		var roles []discord.Role
+		for role := range c.Client.Caches.Roles(*c.GuildID) {
+			roles = append(roles, role)
+		}
+		return FindRole(roles, a.value)
 	default:
 		if a.opt.MaxLength != nil && len([]rune(a.value)) > *a.opt.MaxLength {
 			return nil, fmt.Errorf("must be at most %d characters", *a.opt.MaxLength)
@@ -469,7 +573,7 @@ func (r *Registry) run(c *Context, heavy bool, perms discord.Permissions, guildO
 	if heavy {
 		r.stats.ImageJobs.Add(1)
 	}
-	if err := r.store.IncrementCommand(c.CommandName); err != nil {
+	if err := r.store.IncrementCommand(context.Background(), c.CommandName); err != nil {
 		log.Warn("failed to record command stats", "err", err)
 	}
 	if err == nil {
@@ -511,10 +615,23 @@ func (r *Registry) acquire(ctx context.Context, guildID *snowflake.ID) (func(), 
 	}, nil
 }
 
+// GroupUsage lists a command group's subcommands for prefix invocation.
+func GroupUsage(prefix string, c *Command) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", c.Description)
+	for _, s := range c.Subcommands {
+		fmt.Fprintf(&b, "`%s` %s\n", Usage(prefix, s), s.Description)
+	}
+	return strings.TrimSpace(b.String())
+}
+
 // Usage renders a one-line usage string for prefix invocation.
 func Usage(prefix string, c *Command) string {
+	if len(c.Subcommands) > 0 {
+		return prefix + c.Name + " <" + subNames(c) + "> ..."
+	}
 	var b strings.Builder
-	b.WriteString(prefix + c.Name)
+	b.WriteString(prefix + c.FullName())
 	for _, o := range c.Options {
 		if o.SlashOnly || o.Type == Attachment {
 			continue
@@ -530,4 +647,12 @@ func Usage(prefix string, c *Command) string {
 		}
 	}
 	return b.String()
+}
+
+func subNames(c *Command) string {
+	names := make([]string, len(c.Subcommands))
+	for i, s := range c.Subcommands {
+		names[i] = s.Name
+	}
+	return strings.Join(names, "|")
 }

@@ -191,6 +191,75 @@ func (m *Module) Commands() []*cmd.Command {
 				return encoded(imaging.Invert(img))
 			}),
 		m.rotateCmd(),
+		m.imageCmd("deepfry", []string{"fry", "df"}, "Deep fry an image",
+			[]cmd.Option{
+				{Name: "scale", Description: "Intensity from 1 to 20 (default 10)", Type: cmd.Float, Min: cmd.Ptr(1), Max: cmd.Ptr(20)},
+				{Name: "notransparency", Description: "Don't keep transparency", Type: cmd.Bool},
+			}, func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {
+				fried, err := imaging.Deepfry(imaging.FitWithin(img, 1024), c.FloatOr("scale", 10), !c.Bool("notransparency"))
+				if err != nil {
+					return result{}, err
+				}
+				return encoded(fried)
+			}),
+		m.imageCmd("solarize", nil, "Apply a solarize tint to an image", nil,
+			func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {
+				return encoded(imaging.Solarize(imaging.FitWithin(img, 2048)))
+			}),
+		m.imageCmd("shake", nil, "Shake an image",
+			[]cmd.Option{
+				{Name: "horizontal", Description: "Horizontal magnitude, % of width (default 4)", Type: cmd.Float, Min: cmd.Ptr(0), Max: cmd.Ptr(25)},
+				{Name: "vertical", Description: "Vertical magnitude, % of height (default 4)", Type: cmd.Float, Min: cmd.Ptr(0), Max: cmd.Ptr(25)},
+				{Name: "randomize", Description: "Shake randomly instead of in a pattern", Type: cmd.Bool},
+			}, func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {
+				shaken := imaging.Shake(imaging.FitWithin(img, 512), imaging.ShakeOpts{
+					Horizontal: c.Float("horizontal"), Vertical: c.Float("vertical"), Randomize: c.Bool("randomize"),
+				})
+				data, err := imaging.EncodeGIF(shaken.Frames, shaken.Delays)
+				return result{data: data, ext: "gif"}, err
+			}),
+		m.imageCmd("swapcolors", nil, "Shuffle each pixel's colour channels", nil,
+			func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {
+				return encoded(imaging.SwapColors(imaging.FitWithin(img, 1024)))
+			}),
+		m.imageCmd("swappixels", nil, "Shuffle every pixel of an image around", nil,
+			func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {
+				return encoded(imaging.SwapPixels(imaging.FitWithin(img, 1024)))
+			}),
+		m.imageCmd("swaprgba", nil, "Rearrange an image's RGBA channels",
+			[]cmd.Option{
+				{Name: "channels", Description: "New channel order using r, g, b, a, 0 or 1, e.g. bgr, rrba, 0g0a", Type: cmd.String, Required: true, MaxLength: cmd.Ptr(4)},
+			}, func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {
+				channels, err := imaging.ParseChannels(c.String("channels"))
+				if err != nil {
+					return result{}, cmd.Errorf("%s", capitalize(err.Error()))
+				}
+				return encoded(imaging.SwapRGBA(imaging.FitWithin(img, 2048), channels))
+			}),
+		m.imageCmd("wall", nil, "Tile an image across a wall", nil,
+			func(c *cmd.Context, raw []byte, img *imaging.Image) (result, error) {
+				if len(img.Frames) > 100 {
+					return result{}, cmd.Errorf("That GIF has too many frames (%d, max 100).", len(img.Frames))
+				}
+				data, ext, err := m.magick.Wall(c, raw, img)
+				return result{data: data, ext: ext}, err
+			}),
+		m.imageCmd("watercolor", []string{"watercolour"}, "Apply a watercolor effect to an image",
+			[]cmd.Option{
+				{Name: "contrast", Description: "Contrast from -100 to 100 (default 0)", Type: cmd.Float, Min: cmd.Ptr(-100), Max: cmd.Ptr(100)},
+				{Name: "edge", Description: "Edge gain from 0 to 10 (default 2)", Type: cmd.Float, Min: cmd.Ptr(0), Max: cmd.Ptr(10)},
+				{Name: "mixing", Description: "Edge mixing from 0 to 100 (default 33)", Type: cmd.Int, Min: cmd.Ptr(0), Max: cmd.Ptr(100)},
+				{Name: "smoothing", Description: "Texture smoothing from 0 to 10 (default 0)", Type: cmd.Int, Min: cmd.Ptr(0), Max: cmd.Ptr(10)},
+			}, func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {
+				if len(img.Frames) > 50 {
+					return result{}, cmd.Errorf("That GIF has too many frames for watercolor (%d, max 50).", len(img.Frames))
+				}
+				data, ext, err := m.magick.Watercolor(c, imaging.FitWithin(img, 800), imaging.WatercolorOpts{
+					Contrast: c.FloatOr("contrast", 0), Edge: c.FloatOr("edge", 2),
+					Mixing: c.IntOr("mixing", 33), Smoothing: c.IntOr("smoothing", 0),
+				})
+				return result{data: data, ext: ext}, err
+			}),
 		m.imageCmd("iascii", []string{"gascii"}, "Turn an image or GIF into ASCII art",
 			[]cmd.Option{intOpt("columns", "Width in characters (default 80)", 10, 200)},
 			func(c *cmd.Context, _ []byte, img *imaging.Image) (result, error) {

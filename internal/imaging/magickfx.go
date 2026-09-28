@@ -2,6 +2,7 @@ package imaging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -112,8 +113,8 @@ func arialPath() (string, error) {
 			fontFileErr = err
 			return
 		}
-		defer f.Close()
-		if _, err := f.Write(data); err != nil {
+		_, err = f.Write(data)
+		if err = errors.Join(err, f.Close()); err != nil {
 			fontFileErr = err
 			return
 		}
@@ -186,11 +187,10 @@ func (m *Magick) Watermark(ctx context.Context, data []byte, src *Image, o Water
 		return nil, "", err
 	}
 	defer os.Remove(f.Name())
-	if _, err := f.Write(mark); err != nil {
-		f.Close()
+	_, err = f.Write(mark)
+	if err = errors.Join(err, f.Close()); err != nil {
 		return nil, "", err
 	}
-	f.Close()
 	markSpec = strings.TrimSuffix(markSpec, "-") + f.Name() + "[0]"
 
 	w, h := src.First().Rect.Dx(), src.First().Rect.Dy()
@@ -218,4 +218,80 @@ func (m *Magick) finish(ctx context.Context, data []byte, src *Image, args []str
 	}
 	out, err := m.Run(ctx, data, append(args, "-depth", "8", "png:-")...)
 	return out, "png", err
+}
+
+// Wall tiles the image across a wall receding into the distance.
+func (m *Magick) Wall(ctx context.Context, data []byte, src *Image) ([]byte, string, error) {
+	in, err := InputSpec(data)
+	if err != nil {
+		return nil, "", err
+	}
+	w, h := src.First().Rect.Dx(), src.First().Rect.Dy()
+	// Tiles are 128px tall and keep the source's aspect ratio.
+	tw := max(48, min(256, 128*w/max(1, h)))
+	f := float64(tw) / 128
+	p := func(x, y float64) string { return fmt.Sprintf("%.0f,%.0f", x, y) }
+	points := strings.Join([]string{
+		"0,0", p(0, -40),
+		fmt.Sprintf("%d,0", tw), p(170*f, 20),
+		"0,128", p(0, 440),
+		fmt.Sprintf("%d,128", tw), p(170*f, 380),
+	}, " ")
+	args := []string{in}
+	if !src.Animated() {
+		args[0] += "[0]"
+	}
+	args = append(args,
+		"-coalesce", "-resize", fmt.Sprintf("%dx128!", tw),
+		"-virtual-pixel", "tile", "-background", "none",
+		"-set", "option:distort:viewport", "640x400", "+repage",
+		"-distort", "Perspective", points, "+repage")
+	return m.finish(ctx, data, src, args)
+}
+
+// WatercolorOpts mirrors upstream NotSoBot's watercolor parameters.
+type WatercolorOpts struct {
+	Contrast  float64 // -100..100, default 0
+	Edge      float64 // edge gain, default 2
+	Mixing    int     // percent of ink edges mixed in, default 33
+	Smoothing int     // extra texture smoothing, default 0
+}
+
+// Watercolor paints the image with Kuwahara smoothing and inked edges.
+// Animations are processed frame by frame.
+func (m *Magick) Watercolor(ctx context.Context, src *Image, o WatercolorOpts) ([]byte, string, error) {
+	args := []string{
+		"png:-",
+		"(", "-clone", "0", "-kuwahara", strconv.Itoa(3 + o.Smoothing), "-modulate", "100,120", ")",
+		"(", "-clone", "0", "-colorspace", "gray", "-blur", "0x1", "-edge", "1", "-negate",
+		"-evaluate", "pow", strconv.FormatFloat(o.Edge, 'f', 2, 64), ")",
+		"-delete", "0",
+		"(", "-clone", "0", "-clone", "1", "-compose", "multiply", "-composite", ")",
+		"-delete", "1",
+		"-compose", "blend", "-define", "compose:args=" + strconv.Itoa(o.Mixing), "-composite",
+		"-brightness-contrast", "0x" + strconv.FormatFloat(o.Contrast, 'f', 1, 64),
+		"-depth", "8", "png:-",
+	}
+	out := &Image{Delays: src.Delays, Format: src.Format}
+	for _, f := range src.Frames {
+		frame, err := EncodePNG(f)
+		if err != nil {
+			return nil, "", err
+		}
+		res, err := m.Run(ctx, frame, args...)
+		if err != nil {
+			return nil, "", err
+		}
+		img, err := Decode(res)
+		if err != nil {
+			return nil, "", err
+		}
+		// Keep the original transparency; the filters don't preserve it.
+		painted := img.First()
+		for i := 3; i < len(painted.Pix) && i < len(f.Pix); i += 4 {
+			painted.Pix[i] = f.Pix[i]
+		}
+		out.Frames = append(out.Frames, painted)
+	}
+	return out.Encode()
 }

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/disgoorg/snowflake/v2"
 )
@@ -20,6 +21,7 @@ type Config struct {
 	GeniusToken  string
 	MagickPath   string
 	LogLevel     slog.Level
+	RSSInterval  time.Duration
 }
 
 // Load reads configuration from environment variables. Secrets may also be
@@ -57,6 +59,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid DEV_GUILD_IDS entry %q: %w", raw, err)
 		}
 		cfg.DevGuildIDs = append(cfg.DevGuildIDs, id)
+	}
+
+	cfg.RSSInterval, err = time.ParseDuration(env("RSS_INTERVAL", "5m"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid RSS_INTERVAL: %w", err)
+	}
+	if cfg.RSSInterval < time.Minute {
+		return nil, errors.New("RSS_INTERVAL must be at least 1m")
 	}
 
 	if err := cfg.LogLevel.UnmarshalText([]byte(env("LOG_LEVEL", "info"))); err != nil {

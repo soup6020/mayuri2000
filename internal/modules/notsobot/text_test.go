@@ -9,7 +9,7 @@ func TestAesthetics(t *testing.T) {
 }
 
 func TestEmojify(t *testing.T) {
-	if got := Emojify("Ab1"); got != "🇦​🇧​1️⃣" {
+	if got := Emojify("Ab1"); got != "\U0001F1E6\u200b\U0001F1E7\u200b1\uFE0F\u20E3" {
 		t.Fatalf("got %q", got)
 	}
 }

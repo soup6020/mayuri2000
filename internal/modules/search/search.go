@@ -24,6 +24,12 @@ const userAgent = "Mayuri2000/1.0 (Discord bot; https://github.com/disgoorg/disg
 
 var httpClient = &http.Client{Timeout: 15 * time.Second}
 
+func nixosChannelOpt() cmd.Option {
+	return cmd.Option{Name: "channel", Description: "NixOS channel (default: latest stable)", Type: cmd.String, SlashOnly: true, Choices: []cmd.Choice{
+		{Name: "stable", Value: "stable"}, {Name: "unstable", Value: "unstable"},
+	}}
+}
+
 func queryOpt(desc string) cmd.Option {
 	return cmd.Option{Name: "query", Description: desc, Type: cmd.String, Required: true, Rest: true, MaxLength: cmd.Ptr(200)}
 }
@@ -31,6 +37,8 @@ func queryOpt(desc string) cmd.Option {
 // Searcher holds configuration for the search commands.
 type Searcher struct {
 	geniusToken string
+	nixos       nixosConfigCache
+	frog        frogTips
 }
 
 func New(geniusToken string) *Searcher { return &Searcher{geniusToken: geniusToken} }
@@ -45,6 +53,29 @@ func (s *Searcher) Commands() []*cmd.Command {
 			Run:         s.lyrics,
 		},
 		{
+			Name: "nixpkgs", Aliases: []string{"nix", "nixos", "nixsearch"}, Category: category,
+			Description: "Search NixOS packages on search.nixos.org",
+			Options: []cmd.Option{
+				{Name: "query", Description: "Package name, program or description", Type: cmd.String, Required: true, Rest: true, MaxLength: cmd.Ptr(100)},
+				nixosChannelOpt(),
+			},
+			Run: s.nixpkgs,
+		},
+		{
+			Name: "nixoption", Aliases: []string{"nixopt", "nixopts", "nixoptions", "option"}, Category: category,
+			Description: "Search NixOS configuration options on search.nixos.org",
+			Options: []cmd.Option{
+				{Name: "query", Description: "Option name or keywords, e.g. services.openssh", Type: cmd.String, Required: true, Rest: true, MaxLength: cmd.Ptr(100)},
+				nixosChannelOpt(),
+			},
+			Run: s.nixosOptions,
+		},
+		{
+			Name: "frogtip", Aliases: []string{"frog", "frogtips"}, Category: "Fun",
+			Description: "Get a random tip for operating your frog from frog.tips",
+			Run:         s.frogTip,
+		},
+		{
 			Name: "urban", Aliases: []string{"ud", "urbandictionary"}, Category: category,
 			Description: "Look up a term on Urban Dictionary",
 			Options:     []cmd.Option{queryOpt("Term to look up")},
@@ -55,6 +86,19 @@ func (s *Searcher) Commands() []*cmd.Command {
 			Description: "Look something up on Wikipedia",
 			Options:     []cmd.Option{queryOpt("What to search for")},
 			Run:         wikipedia,
+		},
+		{
+			Name: "wikifeatured", Aliases: []string{"featured", "tfa", "potd"}, Category: category,
+			Description: "Wikipedia's featured article, picture of the day and most read",
+			Options: []cmd.Option{
+				{Name: "date", Description: "Day to show, e.g. 2024-05-17 (default: today, UTC)", Type: cmd.String, MaxLength: cmd.Ptr(10)},
+			},
+			Run: s.wikiFeatured,
+		},
+		{
+			Name: "wikirandom", Aliases: []string{"randomwiki", "rwiki"}, Category: category,
+			Description: "Show a random Wikipedia article",
+			Run:         s.wikiRandom,
 		},
 		{
 			Name: "youtube", Aliases: []string{"yt"}, Category: category,

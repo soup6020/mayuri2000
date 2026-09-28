@@ -19,6 +19,8 @@ import (
 
 	"github.com/ericpauley/go-quantize/quantize"
 	_ "golang.org/x/image/webp"
+
+	"mayuri2000/internal/safehttp"
 )
 
 const (
@@ -31,11 +33,13 @@ const (
 
 var ErrNotImage = errors.New("that doesn't look like a supported image (png, jpeg, gif or webp)")
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+// httpClient refuses non-public addresses: image URLs come from users and
+// the result is posted back, which would otherwise leak internal content.
+var httpClient = safehttp.NewClient(30 * time.Second)
 
 // Download fetches url, refusing bodies larger than MaxDownload.
 func Download(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := safehttp.NewRequest(ctx, url)
 	if err != nil {
 		return nil, err
 	}

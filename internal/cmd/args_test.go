@@ -1,8 +1,14 @@
 package cmd
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/disgoorg/disgo/discord"
+	"github.com/disgoorg/snowflake/v2"
 )
 
 func TestTokenize(t *testing.T) {
@@ -104,5 +110,110 @@ func TestSlashCreateOrdersRequiredFirst(t *testing.T) {
 	sc := c.slashCreate()
 	if sc.Options[0].OptionName() != "req" {
 		t.Fatalf("required option not first: %v", sc.Options[0].OptionName())
+	}
+}
+
+func TestSlashAutocompleteFlag(t *testing.T) {
+	c := &Command{Name: "x", Description: "d", Options: []Option{
+		{Name: "zone", Description: "z", Type: String, Autocomplete: func(string) []Choice { return nil }},
+	}}
+	opt := c.slashCreate().Options[0].(discord.ApplicationCommandOptionString)
+	if !opt.Autocomplete {
+		t.Fatal("autocomplete flag not set on slash option")
+	}
+}
+
+func TestFindRole(t *testing.T) {
+	roles := []discord.Role{
+		{ID: 111111111111111111, Name: "@everyone"},
+		{ID: 222222222222222222, Name: "Moderators"},
+		{ID: 333333333333333333, Name: "Mod Squad"},
+		{ID: 444444444444444444, Name: "Server Booster"},
+	}
+	for query, want := range map[string]snowflake.ID{
+		"<@&222222222222222222>": 222222222222222222,
+		"333333333333333333":     333333333333333333,
+		"moderators":             222222222222222222,
+		"@Moderators":            222222222222222222,
+		"booster":                444444444444444444,
+		"everyone":               111111111111111111,
+		"mod squad":              333333333333333333,
+	} {
+		r, err := FindRole(roles, query)
+		if err != nil || r.ID != want {
+			t.Errorf("FindRole(%q) = %v, %v; want %v", query, r.ID, err, want)
+		}
+	}
+	if _, err := FindRole(roles, "mod"); err == nil || !strings.Contains(err.Error(), "several") {
+		t.Errorf("ambiguous prefix should error, got %v", err)
+	}
+	if _, err := FindRole(roles, "nope"); err == nil {
+		t.Error("unknown role should error")
+	}
+}
+
+func TestAssignRoleRest(t *testing.T) {
+	args, _, _ := assign([]Option{{Name: "role", Type: Role, Required: true, Rest: true}}, "Server Booster")
+	if len(args) != 1 || args[0].value != "Server Booster" {
+		t.Fatalf("got %+v", args)
+	}
+}
+
+func TestFindChannel(t *testing.T) {
+	var chans []discord.GuildChannel
+	for id, name := range map[snowflake.ID]string{111111111111111111: "general", 222222222222222222: "news", 333333333333333333: "News"} {
+		var ch discord.GuildTextChannel
+		if err := json.Unmarshal([]byte(fmt.Sprintf(`{"id":"%d","type":0,"name":%q}`, id, name)), &ch); err != nil {
+			t.Fatal(err)
+		}
+		chans = append(chans, ch)
+	}
+	for q, want := range map[string]snowflake.ID{
+		"<#111111111111111111>": 111111111111111111,
+		"111111111111111111":    111111111111111111,
+		"#general":              111111111111111111,
+		"GENERAL":               111111111111111111,
+	} {
+		if got, err := FindChannel(chans, q); err != nil || got != want {
+			t.Errorf("FindChannel(%q) = %v, %v", q, got, err)
+		}
+	}
+	for _, bad := range []string{"#news", "999999999999999999", "#nope"} {
+		if _, err := FindChannel(chans, bad); err == nil {
+			t.Errorf("FindChannel(%q) should fail", bad)
+		}
+	}
+}
+
+func TestSubcommands(t *testing.T) {
+	group := &Command{Name: "rss", Description: "feeds", Subcommands: []*Command{
+		{Name: "add", Description: "add a feed", Options: []Option{
+			{Name: "name", Description: "n", Type: String, Required: true},
+			{Name: "channel", Description: "c", Type: Channel},
+		}, Run: func(*Context) error { return nil }},
+		{Name: "remove", Aliases: []string{"del"}, Description: "remove", Run: func(*Context) error { return nil }},
+	}}
+	r := &Registry{byName: map[string]*Command{}}
+	r.Add(group)
+
+	sc := group.slashCreate()
+	sub, ok := sc.Options[0].(discord.ApplicationCommandOptionSubCommand)
+	if !ok || sub.Name != "add" || len(sub.Options) != 2 {
+		t.Fatalf("bad subcommand create: %+v", sc.Options)
+	}
+	if _, ok := sub.Options[1].(discord.ApplicationCommandOptionChannel); !ok {
+		t.Fatalf("channel option not created: %+v", sub.Options[1])
+	}
+	if s, ok := group.Sub("DEL"); !ok || s.FullName() != "rss remove" {
+		t.Fatal("subcommand alias lookup failed")
+	}
+	if got := Usage("%", group.Subcommands[0]); got != "%rss add <name> [channel]" {
+		t.Fatalf("usage %q", got)
+	}
+	if got := Usage("%", group); got != "%rss <add|remove> ..." {
+		t.Fatalf("group usage %q", got)
+	}
+	if !strings.Contains(GroupUsage("%", group), "`%rss remove` remove") {
+		t.Fatalf("group help: %s", GroupUsage("%", group))
 	}
 }

@@ -94,7 +94,7 @@ func alias(c *cmd.Context) error {
 		if !replacing && len(st.Aliases(guild)) >= maxAliases {
 			return cmd.Errorf("This server already has %d aliases, the maximum.", maxAliases)
 		}
-		err := st.SetAlias(guild, store.Alias{Name: name, Command: command, CreatorID: c.Author.ID, CreatedAt: time.Now()})
+		err := st.SetAlias(c, guild, store.Alias{Name: name, Command: command, CreatorID: c.Author.ID, CreatedAt: time.Now()})
 		if err != nil {
 			return err
 		}
@@ -108,7 +108,7 @@ func alias(c *cmd.Context) error {
 		if !c.Permissions.Has(discord.PermissionManageGuild) {
 			return cmd.Errorf("You need the Manage Server permission to remove aliases.")
 		}
-		removed, err := st.DeleteAlias(guild, name)
+		removed, err := st.DeleteAlias(c, guild, name)
 		if err != nil {
 			return err
 		}

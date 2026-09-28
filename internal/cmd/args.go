@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
 
+	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/snowflake/v2"
 )
 
@@ -109,7 +111,7 @@ func assign(opts []Option, raw string) (args []rawArg, missing []Option, extras 
 			}
 			continue
 		}
-		if o.Rest && o.Type == String {
+		if o.Rest {
 			rest := strings.TrimSpace(raw[toks[i].Start:])
 			if len(toks)-i == 1 {
 				rest = toks[i].Value // strip quotes from a single quoted token
@@ -148,6 +150,84 @@ func accepts(o Option, tok string) bool {
 	case User:
 		_, ok := ParseUserID(tok)
 		return ok
+	case Channel:
+		_, err := snowflake.Parse(tok)
+		return channelMentionRe.MatchString(tok) || strings.HasPrefix(tok, "#") || err == nil
 	}
 	return true
+}
+
+var roleMentionRe = regexp.MustCompile(`^<@&(\d{15,21})>$`)
+
+// FindRole resolves a role mention, ID or name. Names match exactly
+// (case-insensitively) first, then by unique prefix, then unique substring.
+func FindRole(roles []discord.Role, query string) (discord.Role, error) {
+	query = strings.TrimSpace(query)
+	if m := roleMentionRe.FindStringSubmatch(query); m != nil {
+		query = m[1]
+	}
+	if id, err := snowflake.Parse(query); err == nil {
+		for _, r := range roles {
+			if r.ID == id {
+				return r, nil
+			}
+		}
+	}
+	q := strings.ToLower(strings.TrimPrefix(query, "@"))
+	for _, match := range []func(string) bool{
+		func(n string) bool { return n == q },
+		func(n string) bool { return strings.HasPrefix(n, q) },
+		func(n string) bool { return strings.Contains(n, q) },
+	} {
+		var found []discord.Role
+		for _, r := range roles {
+			if match(strings.ToLower(r.Name)) {
+				found = append(found, r)
+			}
+		}
+		switch {
+		case len(found) == 1:
+			return found[0], nil
+		case len(found) > 1:
+			names := make([]string, 0, 5)
+			for _, r := range found[:min(5, len(found))] {
+				names = append(names, "`"+r.Name+"`")
+			}
+			return discord.Role{}, fmt.Errorf("`%s` matches several roles: %s", query, strings.Join(names, ", "))
+		}
+	}
+	return discord.Role{}, fmt.Errorf("no role named `%s`", query)
+}
+
+var channelMentionRe = regexp.MustCompile(`^<#(\d{15,21})>$`)
+
+// FindChannel resolves a channel mention, ID or name ("general" or
+// "#general"), returning the channel's ID.
+func FindChannel(channels []discord.GuildChannel, query string) (snowflake.ID, error) {
+	query = strings.TrimSpace(query)
+	if m := channelMentionRe.FindStringSubmatch(query); m != nil {
+		query = m[1]
+	}
+	if id, err := snowflake.Parse(query); err == nil {
+		for _, ch := range channels {
+			if ch.ID() == id {
+				return id, nil
+			}
+		}
+		return 0, fmt.Errorf("can't see a text channel with ID `%s`", query)
+	}
+	name := strings.ToLower(strings.TrimPrefix(query, "#"))
+	var found []snowflake.ID
+	for _, ch := range channels {
+		if strings.ToLower(ch.Name()) == name {
+			found = append(found, ch.ID())
+		}
+	}
+	switch len(found) {
+	case 0:
+		return 0, fmt.Errorf("no text channel named `%s`", query)
+	case 1:
+		return found[0], nil
+	}
+	return 0, fmt.Errorf("several channels are named `%s`; mention it instead", query)
 }

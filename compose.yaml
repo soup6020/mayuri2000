@@ -1,0 +1,24 @@
+# Example Docker Compose setup for Mayuri2000.
+#
+# Build and load the image first (it is built by Nix, not a Dockerfile):
+#   nix build .#image && docker load < result
+#
+# Then copy env.example to .env, fill in DISCORD_TOKEN, and start the bot:
+#   cp env.example .env
+#   docker compose up -d
+#   docker compose logs -f
+
+services:
+  mayuri:
+    image: mayuri2000:latest
+    container_name: mayuri2000
+    restart: unless-stopped
+    # All configuration comes from this file; see env.example for every option.
+    env_file:
+      - .env
+    # SQLite database (prefixes, aliases, feeds, reminders, stats) lives in /data.
+    volumes:
+      - mayuri-data:/data
+
+volumes:
+  mayuri-data:

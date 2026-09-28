@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"unicode/utf8"
@@ -15,29 +16,32 @@ func (r *Registry) Validate() error {
 		return fmt.Errorf("%d slash commands registered; Discord allows 100", len(r.commands))
 	}
 	for _, c := range r.commands {
-		if !nameRe.MatchString(c.Name) {
-			return fmt.Errorf("command %q: invalid name", c.Name)
+		if err := validateCommand(c); err != nil {
+			return err
 		}
-		if n := utf8.RuneCountInString(c.Description); n < 1 || n > 100 {
-			return fmt.Errorf("command %q: description must be 1-100 characters, got %d", c.Name, n)
+		if len(c.Subcommands) == 0 {
+			continue
 		}
-		if len(c.Options) > 25 {
-			return fmt.Errorf("command %q: too many options", c.Name)
+		if len(c.Options) > 0 || c.Run != nil {
+			return fmt.Errorf("command %q: a group can't have its own options or Run", c.Name)
+		}
+		if len(c.Subcommands) > 25 {
+			return fmt.Errorf("command %q: too many subcommands", c.Name)
 		}
 		seen := map[string]bool{}
-		for _, o := range c.Options {
-			if !nameRe.MatchString(o.Name) {
-				return fmt.Errorf("command %q: invalid option name %q", c.Name, o.Name)
+		for _, sub := range c.Subcommands {
+			if seen[sub.Name] {
+				return fmt.Errorf("command %q: duplicate subcommand %q", c.Name, sub.Name)
 			}
-			if seen[o.Name] {
-				return fmt.Errorf("command %q: duplicate option %q", c.Name, o.Name)
+			seen[sub.Name] = true
+			if len(sub.Subcommands) > 0 {
+				return fmt.Errorf("command %q: nested subcommand groups aren't supported", sub.FullName())
 			}
-			seen[o.Name] = true
-			if n := utf8.RuneCountInString(o.Description); n < 1 || n > 100 {
-				return fmt.Errorf("command %q option %q: description must be 1-100 characters", c.Name, o.Name)
+			if sub.Run == nil {
+				return fmt.Errorf("command %q: missing Run", sub.FullName())
 			}
-			if o.Rest && o.Type != String {
-				return fmt.Errorf("command %q option %q: only string options can be Rest", c.Name, o.Name)
+			if err := validateCommand(sub); err != nil {
+				return err
 			}
 		}
 	}
@@ -49,7 +53,43 @@ func (r *Registry) Validate() error {
 		}
 	}
 	if counts[MenuMessage] > 5 || counts[MenuUser] > 5 {
-		return fmt.Errorf("Discord allows at most 5 message and 5 user context menus")
+		return errors.New("at most 5 message and 5 user context menus are allowed")
+	}
+	return nil
+}
+
+func validateCommand(c *Command) error {
+	name := c.FullName()
+	if !nameRe.MatchString(c.Name) {
+		return fmt.Errorf("command %q: invalid name", name)
+	}
+	if n := utf8.RuneCountInString(c.Description); n < 1 || n > 100 {
+		return fmt.Errorf("command %q: description must be 1-100 characters, got %d", name, n)
+	}
+	if len(c.Options) > 25 {
+		return fmt.Errorf("command %q: too many options", name)
+	}
+	seen := map[string]bool{}
+	for _, o := range c.Options {
+		if !nameRe.MatchString(o.Name) {
+			return fmt.Errorf("command %q: invalid option name %q", name, o.Name)
+		}
+		if seen[o.Name] {
+			return fmt.Errorf("command %q: duplicate option %q", name, o.Name)
+		}
+		seen[o.Name] = true
+		if n := utf8.RuneCountInString(o.Description); n < 1 || n > 100 {
+			return fmt.Errorf("command %q option %q: description must be 1-100 characters", name, o.Name)
+		}
+		if o.Autocomplete != nil && (o.Type != String || len(o.Choices) > 0) {
+			return fmt.Errorf("command %q option %q: autocomplete needs a String option without choices", name, o.Name)
+		}
+		if o.Rest && o.Type != String && o.Type != Role {
+			return fmt.Errorf("command %q option %q: only string and role options can be Rest", name, o.Name)
+		}
+	}
+	if len(c.Subcommands) == 0 && c.Run == nil {
+		return fmt.Errorf("command %q: missing Run", name)
 	}
 	return nil
 }

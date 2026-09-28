@@ -1,0 +1,123 @@
+# Mayuri2000
+
+Discord bot in Go on [disgo](https://github.com/disgoorg/disgo) (v0.19), replacing a
+Red-DiscordBot instance/
+User-facing docs are in `README.md`.
+
+## Commands
+
+```sh
+nix develop -c go test ./...        # full suite (imaging tests use real `magick`, skip if absent)
+nix develop -c golangci-lint run    # must report 0 issues; `golangci-lint fmt` fixes formatting
+nix flake check                     # package build + tests, and the lint check
+nix build                           # static binary; checkPhase runs the whole test suite
+nix build .#image                   # OCI image (bot + imagemagick w/ liblqr + cacert), deployed via quadlet-nix
+DISCORD_TOKEN=... DEV_GUILD_IDS=<test guild> nix develop -c go run ./cmd/mayuri
+```
+
+- Flakes only see git-tracked files: `git add` new files before `nix build`.
+- After changing `go.mod`/`go.sum`, update `vendorHash` in `flake.nix` (set it to
+  `pkgs.lib.fakeHash`, build, copy the `got:` hash).
+- Lint config is `.golangci.yml` (v2 format): standard linters plus bodyclose, errorlint,
+  gocritic, noctx, etc.; gofmt/goimports with `mayuri2000` as the local import prefix.
+  Fix findings rather than adding `//nolint`; `Close` on read-only resources and `os.Remove`
+  are excluded from errcheck, but check `Close` errors on files you write.
+- Store methods take a `context.Context` (noctx); pass the command `*cmd.Context`.
+- Nix: use flake-parts (`perSystem`), never flake-utils.
+- `IMAGING_OUT=<dir> go test ./internal/imaging/` writes every effect's output for visual checks.
+
+## Layout
+
+- `cmd/mayuri/` — main: config → store → magick probe → registry → `Validate()` → sync → gateway.
+  Tests here build the full registry (`testRegistry`) and drive commands end to end.
+- `internal/cmd/` — the command framework (see below).
+- `internal/config/` — env config; secrets also accept `<NAME>_FILE`.
+- `internal/store/` — SQLite (modernc, pure Go, no cgo). Tables are created with
+  `CREATE TABLE IF NOT EXISTS` in `schema`; prefixes and aliases are cached in memory.
+- `internal/tz/` — IANA zone lookup/search. `zones.go` is generated from Go's bundled tz
+  database (`go generate ./internal/tz`, rerun after a Go upgrade); `time/tzdata` is embedded.
+- `internal/safehttp/` — HTTP client for **user-supplied URLs**: refuses loopback/private/
+  link-local/CGNAT addresses at dial time (SSRF guard). Always use it (or `safehttp.NewRequest`)
+  when fetching a URL a user typed; fixed third-party APIs can use a normal client.
+- `internal/htmlmd/` — HTML fragment → Discord markdown (option docs, feed summaries).
+- `internal/rss/` — feed fetching (gofeed), seen-item tracking, templates/embeds, and the
+  `Poller` started from `main` (every `RSS_INTERVAL`). `internal/modules/feeds/` holds `/rss`.
+- `internal/when/` — human time parsing: `ParseDuration` ("3h12m", also used by
+  `/timeout`), `Parse` (delays, clock times, day words, ISO dates in a given location) and
+  `Split` (greedy time prefix of a sentence, for prefix commands).
+- `internal/modules/reminders/` — `/remind`, `/reminders`, and the `Scheduler` (started in
+  `main`; sleeps until the next due reminder, `Wake()` after adding one). Delivery only
+  pings the owner; DMs fall back to the source channel when closed; transient failures
+  retry with backoff, permanent ones (unknown channel, missing access) drop the reminder.
+- `internal/imagefind/` — locates a command's input image (port of NotSoBot's ImageFinder).
+- `internal/imaging/` — decode/encode (GIF frames are fully composed), pure-Go effects, and
+  the ImageMagick CLI runner (`magick.go`, `magickfx.go`).
+- `internal/modules/{core,notsobot,moderation,search}/` — the commands.
+- `assets/` — `go:embed`ded fonts, templates, petpet frames, vaporwave images.
+
+## Command framework (`internal/cmd`)
+
+Each `cmd.Command` is defined once and serves both slash and text-prefix invocations
+(`Context` hides the transport). Rules:
+
+- Register in `main.go` via `registry.Add(...)`. `Registry.Validate()` enforces Discord's
+  limits at startup (names `^[a-z0-9_-]{1,32}$`, descriptions 1–100 chars, ≤25 options,
+  ≤100 commands, ≤5 message/user context menus) and `TestCommandsValid` checks it in CI.
+- Prefix args map to `Options` positionally in declaration order. Slash requires required
+  options first; `slashCreate` reorders automatically.
+  - `Rest: true` (String only) takes the remaining raw text — use for the last free-text arg.
+  - `Accept` lets an optional option decline a token so it falls through to the next option
+    (e.g. `url` only accepts image refs, `delete_days` only a single digit so user IDs never match).
+  - `Channel` options (value: `snowflake.ID`, via `c.OptChannel`) take a mention, ID or
+    `#name` for prefix use (`FindChannel`).
+  - `Role` options take a mention, ID or name for prefix use (`FindRole`: exact, then unique
+    prefix, then unique substring); `Rest` works for String and Role options.
+  - `SlashOnly` options and `Attachment` options are never filled from prefix tokens;
+    attachments come from the message's attachments. Unassigned tokens land in `c.Extras`.
+- `Perms` sets slash default member permissions **and** is checked at runtime for both
+  transports. `GuildOnly` restricts to servers.
+- `Heavy` commands defer immediately, get a 3-minute context, and are serialised per guild
+  plus bounded globally — use for anything doing image work or slow network calls.
+- Return `cmd.Errorf(...)` for user-facing errors (shown ephemerally); any other error is
+  logged and the user sees a generic message. Panics are recovered.
+- Command groups: set `Subcommands` (slash `/rss add`, prefix `%rss add`). The group has no
+  Options/Run; its `Perms`/`GuildOnly` apply to all subcommands (Discord only supports default
+  permissions on the top-level command). Stats and logs use `FullName()` ("rss add").
+- `Option.Autocomplete` (String options without `Choices`) supplies slash-command
+  suggestions as the user types; results are capped at 25 and 100 chars each.
+- `c.Paginate(pages)` for multi-page results; state lives in memory for 15 minutes and only
+  the invoker can flip pages. Button custom IDs must be unique per message.
+- Aliases are per-guild, prefix-only, resolved in `Registry.Resolve`; alias arguments come
+  before the invocation's own.
+- Stats: every run is recorded in `Registry.Stats()` (session) and `store.IncrementCommand` (all time).
+- For tests, `cmd.NewTestContext(registry, args)` returns a context whose replies are captured.
+
+## Gotchas
+
+- **ImageMagick safety**: always pass input via `InputSpec` (explicit sniffed coder like
+  `png:-`, never bare `-`) so untrusted data can't select MVG/SVG/MSL coders, and run any
+  user text through `escapeText` (`@` reads files, `%` is a property escape).
+- Go's `image/jpeg` rejects corrupted data; `glitch` renders through magick (libjpeg is
+  lenient) and falls back to Go decoding only when magick is unavailable.
+- The embedded arial has no CJK/full-width glyphs (renders as boxes).
+- Interaction replies: after a defer, the first reply edits the original response
+  (`UpdateInteractionResponse`); don't send `embeds`/`components` as null there.
+- RSS: subscribing stores all current item IDs as seen (no backlog spam); each poll posts at
+  most 5 new items oldest-first; items that fail to post stay unseen and are retried (the
+  ETag/Last-Modified cache is dropped so the next poll refetches). Feed posts use empty
+  `AllowedMentions` so feed content can't ping anyone. Poller tests use an httptest server by
+  swapping `Fetcher.client`, since the production client refuses loopback.
+- `nixpkgs`/`nixoption` scrape search.nixos.org's frontend bundle for the Elasticsearch schema version,
+  public credentials and channel list (cached 6h, falling back to `defaultNixosConfig`);
+  bump the fallback if the site's schema version changes.
+- Scraped sources (YouTube results, Genius, Tenor without a key) can break when those sites
+  change; parsers are tested against saved responses in `internal/modules/search/testdata/`
+  — refresh the fixtures from live responses when fixing one.
+- Prefix commands need the privileged Message Content intent enabled in the Developer Portal.
+
+## Conventions
+
+- Match existing style: small focused files, comments explaining *why*, `slog` logging.
+- Keep user-visible command descriptions short (≤100 chars) and aliases compatible with the
+  old Red commands where they exist.
+- Don't commit unless asked.

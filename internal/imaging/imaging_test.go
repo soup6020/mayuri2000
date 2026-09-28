@@ -3,12 +3,14 @@ package imaging
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -343,5 +345,146 @@ func TestMagickEffects(t *testing.T) {
 			t.Fatal(ext, err)
 		}
 		check(t, "watermark_gif_custom", data, true)
+	})
+}
+
+func TestUpstreamEffects(t *testing.T) {
+	_, still := stillFixture(t)
+	_, anim := gifFixture(t)
+
+	t.Run("solarize", func(t *testing.T) {
+		out := Solarize(still).First()
+		for i := 0; i < len(out.Pix); i += 4 {
+			if out.Pix[i] > 128 || out.Pix[i+1] > 128 || out.Pix[i+2] > 128 {
+				t.Fatalf("solarized channel above midpoint at %d: %v", i, out.Pix[i:i+3])
+			}
+		}
+		data, _, _ := Solarize(anim).Encode()
+		check(t, "solarize_gif", data, true)
+	})
+	t.Run("deepfry", func(t *testing.T) {
+		for _, scale := range []float64{1, 10, 20} {
+			fried, err := Deepfry(still, scale, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fried.First().Rect != still.First().Rect {
+				t.Fatalf("deepfry changed size: %v", fried.First().Rect)
+			}
+			data, _, _ := fried.Encode()
+			check(t, fmt.Sprintf("deepfry_%v", scale), data, false)
+		}
+		// Transparency is kept by default and dropped on request.
+		clear := fixture(64, 64, 0)
+		for i := 3; i < len(clear.Pix); i += 4 {
+			clear.Pix[i] = 0
+		}
+		src := &Image{Frames: []*image.NRGBA{clear}}
+		kept, _ := Deepfry(src, 10, true)
+		dropped, _ := Deepfry(src, 10, false)
+		if kept.First().Pix[3] != 0 || dropped.First().Pix[3] != 255 {
+			t.Fatalf("alpha handling: kept=%d dropped=%d", kept.First().Pix[3], dropped.First().Pix[3])
+		}
+	})
+	t.Run("shake", func(t *testing.T) {
+		out := Shake(still, ShakeOpts{})
+		if len(out.Frames) != 12 || out.First().Rect != still.First().Rect {
+			t.Fatalf("shake: %d frames, %v", len(out.Frames), out.First().Rect)
+		}
+		if bytes.Equal(out.Frames[0].Pix, out.Frames[1].Pix) {
+			t.Fatal("shake frames don't move")
+		}
+		data, _ := EncodeGIF(out.Frames, out.Delays)
+		check(t, "shake", data, true)
+		if got := Shake(anim, ShakeOpts{Horizontal: 10, Randomize: true}); len(got.Frames) != len(anim.Frames) {
+			t.Fatalf("animated shake frame count %d", len(got.Frames))
+		}
+	})
+	t.Run("swappixels", func(t *testing.T) {
+		out := SwapPixels(still).First()
+		if histogram(out) != histogram(still.First()) {
+			t.Fatal("swappixels must keep the same set of pixels")
+		}
+		if bytes.Equal(out.Pix, still.First().Pix) {
+			t.Fatal("swappixels didn't move anything")
+		}
+		// Identical frames must stay identical: one permutation for all frames.
+		same := &Image{Frames: []*image.NRGBA{still.First(), still.First()}, Delays: []int{10, 10}}
+		a := SwapPixels(same)
+		if !bytes.Equal(a.Frames[0].Pix, a.Frames[1].Pix) {
+			t.Fatal("swappixels used different permutations per frame")
+		}
+	})
+	t.Run("swapcolors", func(t *testing.T) {
+		out := SwapColors(still).First()
+		src := still.First()
+		for i := 0; i < len(out.Pix); i += 4 {
+			a := []uint8{src.Pix[i], src.Pix[i+1], src.Pix[i+2]}
+			b := []uint8{out.Pix[i], out.Pix[i+1], out.Pix[i+2]}
+			slices.Sort(a)
+			slices.Sort(b)
+			if !slices.Equal(a, b) || out.Pix[i+3] != src.Pix[i+3] {
+				t.Fatalf("pixel %d is not a permutation of its channels", i/4)
+			}
+		}
+	})
+	t.Run("swaprgba", func(t *testing.T) {
+		ch, err := ParseChannels("bgr")
+		if err != nil || ch != [4]int{2, 1, 0, 3} {
+			t.Fatalf("ParseChannels(bgr) = %v, %v", ch, err)
+		}
+		ch, _ = ParseChannels("0G1a")
+		out := SwapRGBA(still, ch).First()
+		src := still.First()
+		if out.Pix[0] != 0 || out.Pix[1] != src.Pix[1] || out.Pix[2] != 255 || out.Pix[3] != src.Pix[3] {
+			t.Fatalf("0g1a: got %v from %v", out.Pix[:4], src.Pix[:4])
+		}
+		for _, bad := range []string{"rg", "rgbax", "xyz", ""} {
+			if _, err := ParseChannels(bad); err == nil {
+				t.Errorf("ParseChannels(%q) should fail", bad)
+			}
+		}
+	})
+}
+
+func histogram(img *image.NRGBA) string {
+	counts := map[[4]uint8]int{}
+	for i := 0; i < len(img.Pix); i += 4 {
+		counts[[4]uint8(img.Pix[i:i+4])]++
+	}
+	return fmt.Sprint(len(counts), counts[[4]uint8(img.Pix[0:4])])
+}
+
+func TestMagickUpstreamEffects(t *testing.T) {
+	m := magickOrSkip(t)
+	ctx := context.Background()
+	raw, still := stillFixture(t)
+	graw, anim := gifFixture(t)
+	t.Run("wall", func(t *testing.T) {
+		data, ext, err := m.Wall(ctx, raw, still)
+		if err != nil || ext != "png" {
+			t.Fatal(ext, err)
+		}
+		out := check(t, "wall", data, false)
+		if b := out.First().Rect; b.Dx() != 640 || b.Dy() != 400 {
+			t.Fatalf("wall size %v", b)
+		}
+		data, ext, err = m.Wall(ctx, graw, anim)
+		if err != nil || ext != "gif" {
+			t.Fatal(ext, err)
+		}
+		check(t, "wall_gif", data, true)
+	})
+	t.Run("watercolor", func(t *testing.T) {
+		data, ext, err := m.Watercolor(ctx, still, WatercolorOpts{Edge: 2, Mixing: 33})
+		if err != nil || ext != "png" {
+			t.Fatal(ext, err)
+		}
+		check(t, "watercolor", data, false)
+		data, ext, err = m.Watercolor(ctx, anim, WatercolorOpts{Edge: 4, Mixing: 80, Smoothing: 3, Contrast: 20})
+		if err != nil || ext != "gif" {
+			t.Fatal(ext, err)
+		}
+		check(t, "watercolor_gif", data, true)
 	})
 }

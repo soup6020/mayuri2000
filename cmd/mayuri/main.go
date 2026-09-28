@@ -18,9 +18,12 @@ import (
 	"mayuri2000/internal/imagefind"
 	"mayuri2000/internal/imaging"
 	"mayuri2000/internal/modules/core"
+	"mayuri2000/internal/modules/feeds"
 	"mayuri2000/internal/modules/moderation"
 	"mayuri2000/internal/modules/notsobot"
+	"mayuri2000/internal/modules/reminders"
 	"mayuri2000/internal/modules/search"
+	"mayuri2000/internal/rss"
 	"mayuri2000/internal/store"
 )
 
@@ -39,11 +42,15 @@ func run() error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(log)
 
-	st, err := store.Open(cfg.DatabasePath)
+	st, err := store.Open(context.Background(), cfg.DatabasePath)
 	if err != nil {
 		return err
 	}
-	defer st.Close()
+	defer func() {
+		if err := st.Close(); err != nil {
+			log.Error("closing database", "err", err)
+		}
+	}()
 
 	magick, err := imaging.NewMagick(context.Background(), cfg.MagickPath)
 	if err != nil {
@@ -54,13 +61,23 @@ func run() error {
 
 	registry := cmd.NewRegistry(log, st, cfg.Prefix)
 	registry.Add(core.Commands()...)
+	registry.AddMenus(core.UserInfoMenu())
 
 	nsb := notsobot.New(imagefind.New(cfg.TenorAPIKey), magick)
 	nsbCommands := nsb.Commands()
 	registry.Add(nsbCommands...)
 	registry.AddMenus(nsb.Menus(nsbCommands)...)
 	registry.Add(moderation.Commands()...)
-	registry.Add(search.New(cfg.GeniusToken).Commands()...)
+	searcher := search.New(cfg.GeniusToken)
+	registry.Add(searcher.Commands()...)
+	for prefix, h := range searcher.Components() {
+		registry.HandleComponent(prefix, h)
+	}
+	fetcher := rss.NewFetcher()
+	// The scheduler's REST client is set once the Discord client exists.
+	scheduler := reminders.NewScheduler(st, nil, log)
+	registry.Add(reminders.New(scheduler).Commands()...)
+	registry.Add(feeds.New(fetcher).Commands()...)
 	if err := registry.Validate(); err != nil {
 		return err
 	}
@@ -95,6 +112,13 @@ func run() error {
 		return err
 	}
 	log.Info("bot is running", "prefix", cfg.Prefix)
+
+	pollCtx, stopPolling := context.WithCancel(context.Background())
+	defer stopPolling()
+	poller := &rss.Poller{Store: st, Fetcher: fetcher, Poster: client.Rest, Interval: cfg.RSSInterval, Log: log}
+	go poller.Run(pollCtx)
+	scheduler.Rest = client.Rest
+	go scheduler.Run(pollCtx)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)

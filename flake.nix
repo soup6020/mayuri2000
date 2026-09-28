@@ -24,7 +24,7 @@
             pname = "mayuri2000";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-lB9jOFZbEdgR8zs+rbX3dnRBQMn9l0ASWZ++Lq7zJ/k=";
+            vendorHash = "sha256-frcEMdhcyKqDusy7EkA1p3ZjlQsOIdOMJn3BbF7UAvQ=";
             subPackages = [ "cmd/mayuri" ];
             env.CGO_ENABLED = 0;
             ldflags = [
@@ -39,6 +39,23 @@
               runHook postCheck
             '';
             meta.mainProgram = "mayuri";
+          };
+
+          # `nix flake check` builds (and tests) the package and runs the linters.
+          checks = {
+            package = self'.packages.default;
+            lint = self'.packages.default.overrideAttrs (old: {
+              pname = "mayuri2000-lint";
+              nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
+              buildPhase = ''
+                runHook preBuild
+                export HOME=$TMPDIR GOLANGCI_LINT_CACHE=$TMPDIR/golangci-lint
+                golangci-lint run ./...
+                runHook postBuild
+              '';
+              doCheck = false;
+              installPhase = "touch $out";
+            });
           };
 
           packages.image = pkgs.dockerTools.buildLayeredImage {

@@ -124,7 +124,7 @@ func (f *figletFont) smushAmount(lines [][]rune, glyph [][]rune) int {
 			gb++
 		}
 		a := gb + len(line) - 1 - lb
-		var l, r rune = ' ', ' '
+		l, r := ' ', ' '
 		if lb >= 0 {
 			l = line[lb]
 		}
