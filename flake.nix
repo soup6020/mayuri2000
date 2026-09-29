@@ -56,6 +56,13 @@
               doCheck = false;
               installPhase = "touch $out";
             });
+            # Behaviour specs (openspec/specs) must stay well-formed.
+            specs = pkgs.runCommand "mayuri2000-specs" { nativeBuildInputs = [ pkgs.openspec ]; } ''
+              export HOME=$TMPDIR OPENSPEC_TELEMETRY=0
+              cd ${./.}
+              openspec validate --specs --strict --no-interactive
+              touch $out
+            '';
           };
 
           packages.image = pkgs.dockerTools.buildLayeredImage {
@@ -84,6 +91,7 @@
               pkgs.gopls
               pkgs.golangci-lint
               pkgs.sqlite
+              pkgs.openspec
               magick
             ];
           };

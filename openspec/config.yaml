@@ -1,0 +1,37 @@
+schema: spec-driven
+
+# Project context, shown to AI when creating artifacts.
+context: |
+  Mayuri2000 is a single-instance Discord bot for a small group of servers,
+  replacing a Red-DiscordBot instance. Its most important feature set is a
+  port of the NotSoBot image cog.
+
+  Tech stack:
+  - Go (module `mayuri2000`), disgo v0.19 for Discord, SQLite via
+    modernc.org/sqlite (pure Go, no cgo).
+  - ImageMagick 7 CLI (with liblqr) for magik/caption/watermark/wall/
+    watercolor/glitch rendering; everything else is pure Go image code.
+  - Nix flake built with flake-parts (never flake-utils): package, OCI image,
+    devShell, and `nix flake check` running tests plus golangci-lint.
+  - Deployed as the OCI image via quadlet-nix (Docker Compose example exists).
+
+  Conventions:
+  - Every command is defined once in `internal/cmd` and works as a slash
+    command and via the text prefix; see CLAUDE.md for framework rules.
+  - User-facing errors use `cmd.Errorf`; everything else is logged.
+  - URLs supplied by users are fetched only through `internal/safehttp`.
+  - Bot output must never mass-mention (`@everyone`, roles, other users)
+    unless a spec explicitly allows a specific ping.
+  - Parsers for scraped/third-party responses are tested against saved
+    fixtures in `testdata/`.
+  - CLAUDE.md describes code layout and workflow; specs describe behaviour.
+
+# Per-artifact rules.
+rules:
+  proposal:
+    - Name the affected capability specs and whether commands are added, changed or removed.
+    - Call out Discord limits touched (option counts, 100-char descriptions, 25 choices, message/embed sizes, context menu slots).
+  tasks:
+    - Include tests (fixtures for any third-party API or scraped page).
+    - Finish with `golangci-lint run ./...` reporting 0 issues and `nix flake check` passing; update vendorHash if go.mod changed.
+    - Update README.md (user-facing) and CLAUDE.md (developer-facing) when behaviour or layout changes.

@@ -9,7 +9,7 @@ User-facing docs are in `README.md`.
 ```sh
 nix develop -c go test ./...        # full suite (imaging tests use real `magick`, skip if absent)
 nix develop -c golangci-lint run    # must report 0 issues; `golangci-lint fmt` fixes formatting
-nix flake check                     # package build + tests, and the lint check
+nix flake check                     # package build + tests, lint, and spec validation
 nix build                           # static binary; checkPhase runs the whole test suite
 nix build .#image                   # OCI image (bot + imagemagick w/ liblqr + cacert), deployed via quadlet-nix
 DISCORD_TOKEN=... DEV_GUILD_IDS=<test guild> nix develop -c go run ./cmd/mayuri
@@ -25,6 +25,22 @@ DISCORD_TOKEN=... DEV_GUILD_IDS=<test guild> nix develop -c go run ./cmd/mayuri
 - Store methods take a `context.Context` (noctx); pass the command `*cmd.Context`.
 - Nix: use flake-parts (`perSystem`), never flake-utils.
 - `IMAGING_OUT=<dir> go test ./internal/imaging/` writes every effect's output for visual checks.
+
+## Specs (OpenSpec)
+
+Intended behaviour lives in `openspec/specs/<capability>/spec.md` (requirements + scenarios);
+this file covers code layout and workflow. Capabilities: `command-framework`, `image-commands`,
+`moderation`, `search`, `rss-feeds`, `reminders`, `info-commands`, `utilities`, `safety`,
+`deployment`. Project context and artifact rules are in `openspec/config.yaml`.
+
+- Read the relevant spec before changing a feature: many behaviours there are deliberate
+  decisions (e.g. RSS marks existing items seen, reminders only ping their owner,
+  `swapcolors` keeps alpha, `nix shell nixpkgs#…` snippets) that the code alone doesn't explain.
+- New features or behaviour changes go through a change proposal: `/opsx:propose "<idea>"`,
+  then `/opsx:apply`, then `/opsx:archive` to merge its delta specs into `openspec/specs/`.
+  Small fixes that don't change specified behaviour don't need a proposal.
+- `openspec validate --specs --strict` must pass; `nix flake check` runs it (`checks.specs`).
+  Requirements need SHALL/MUST, at most 500 characters, and at least one `#### Scenario:`.
 
 ## Layout
 
