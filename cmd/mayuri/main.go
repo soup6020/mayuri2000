@@ -59,11 +59,16 @@ func run() error {
 		log.Warn("ImageMagick lacks liquid rescale (liblqr) support; magik is disabled")
 	}
 
+	ff, err := imaging.NewFFmpeg(context.Background(), cfg.FFmpegPath)
+	if err != nil {
+		log.Warn("ffmpeg unavailable; MP4 video input is disabled", "err", err)
+	}
+
 	registry := cmd.NewRegistry(log, st, cfg.Prefix)
 	registry.Add(core.Commands()...)
 	registry.AddMenus(core.UserInfoMenu())
 
-	nsb := notsobot.New(imagefind.New(cfg.TenorAPIKey), magick)
+	nsb := notsobot.New(imagefind.New(cfg.TenorAPIKey), magick, ff)
 	nsbCommands := nsb.Commands()
 	registry.Add(nsbCommands...)
 	registry.AddMenus(nsb.Menus(nsbCommands)...)

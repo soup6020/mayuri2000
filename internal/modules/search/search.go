@@ -39,9 +39,12 @@ type Searcher struct {
 	geniusToken string
 	nixos       nixosConfigCache
 	frog        frogTips
+	scp         *scpClient
 }
 
-func New(geniusToken string) *Searcher { return &Searcher{geniusToken: geniusToken} }
+func New(geniusToken string) *Searcher {
+	return &Searcher{geniusToken: geniusToken, scp: newSCPClient()}
+}
 
 func (s *Searcher) Commands() []*cmd.Command {
 	return []*cmd.Command{
@@ -74,6 +77,16 @@ func (s *Searcher) Commands() []*cmd.Command {
 			Name: "frogtip", Aliases: []string{"frog", "frogtips"}, Category: "Fun",
 			Description: "Get a random tip for operating your frog from frog.tips",
 			Run:         s.frogTip,
+		},
+		{
+			Name: "scp", Category: category,
+			Description: "Look up an SCP Foundation article, e.g. /scp 3000",
+			Options: []cmd.Option{
+				{Name: "number", Description: "SCP number from 1 to 9999", Type: cmd.Int, Required: true, Min: cmd.Ptr(1), Max: cmd.Ptr(scpMaxNumber)},
+			},
+			// Up to two wiki page loads; defer so slow responses don't time out.
+			Heavy: true,
+			Run:   s.scpArticle,
 		},
 		{
 			Name: "urban", Aliases: []string{"ud", "urbandictionary"}, Category: category,
@@ -159,10 +172,19 @@ func do(req *http.Request) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: HTTP %d", req.URL.Host, resp.StatusCode)
+		return nil, &HTTPStatusError{Host: req.URL.Host, Code: resp.StatusCode}
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 }
+
+// HTTPStatusError reports a non-200 response, so callers can tell "not
+// found" apart from other failures.
+type HTTPStatusError struct {
+	Host string
+	Code int
+}
+
+func (e *HTTPStatusError) Error() string { return fmt.Sprintf("%s: HTTP %d", e.Host, e.Code) }
 
 func truncate(s string, n int) string {
 	r := []rune(s)

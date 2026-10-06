@@ -29,7 +29,7 @@ func TestCommandsValid(t *testing.T) {
 	r := cmd.NewRegistry(slog.Default(), st, "%")
 	r.Add(core.Commands()...)
 	r.AddMenus(core.UserInfoMenu())
-	nsb := notsobot.New(imagefind.New(""), &imaging.Magick{})
+	nsb := notsobot.New(imagefind.New(""), &imaging.Magick{}, &imaging.FFmpeg{})
 	cmds := nsb.Commands()
 	r.Add(cmds...)
 	r.AddMenus(nsb.Menus(cmds)...)

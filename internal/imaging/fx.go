@@ -122,6 +122,9 @@ func Shake(m *Image, o ShakeOpts) *Image {
 	dx, dy := int(float64(w)*o.Horizontal/100), int(float64(h)*o.Vertical/100)
 	rng := rand.New(rand.NewPCG(3, 4))
 	out := &Image{Format: "gif", Delays: delays}
+	if m.Animated() {
+		out.Video = m.Video // shaking a video keeps it a video
+	}
 	for i, f := range frames {
 		// Scale up so the moving crop window never shows empty borders.
 		big := dimg.Resize(f, w+2*dx, h+2*dy, dimg.Lanczos)

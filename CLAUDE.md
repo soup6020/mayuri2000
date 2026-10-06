@@ -58,6 +58,9 @@ this file covers code layout and workflow. Capabilities: `command-framework`, `i
 - `internal/htmlmd/` — HTML fragment → Discord markdown (option docs, feed summaries).
 - `internal/rss/` — feed fetching (gofeed), seen-item tracking, templates/embeds, and the
   `Poller` started from `main` (every `RSS_INTERVAL`). `internal/modules/feeds/` holds `/rss`.
+- `internal/units/` — unit conversion (`/convert`): units grouped by kind, each converting
+  to/from the kind's base unit (kelvin, metre, metre/second); add a unit by adding a table
+  entry (`linear(...)` for factor-only units). Display names use Canadian spelling.
 - `internal/when/` — human time parsing: `ParseDuration` ("3h12m", also used by
   `/timeout`), `Parse` (delays, clock times, day words, ISO dates in a given location) and
   `Split` (greedy time prefix of a sentence, for prefix commands).
@@ -65,9 +68,15 @@ this file covers code layout and workflow. Capabilities: `command-framework`, `i
   `main`; sleeps until the next due reminder, `Wake()` after adding one). Delivery only
   pings the owner; DMs fall back to the source channel when closed; transient failures
   retry with backoff, permanent ones (unknown channel, missing access) drop the reminder.
-- `internal/imagefind/` — locates a command's input image (port of NotSoBot's ImageFinder).
-- `internal/imaging/` — decode/encode (GIF frames are fully composed), pure-Go effects, and
-  the ImageMagick CLI runner (`magick.go`, `magickfx.go`).
+- `internal/imagefind/` — locates a command's input (port of NotSoBot's ImageFinder). Returns
+  `Source{URL, Kind}`: `Image`, `Video` (MP4) or `GIFVideo` (Tenor/Klipy MP4 — gifv embeds and
+  tenor.com/klipy.com hosts). Klipy pages 403, so Klipy only arrives via Discord's gifv embed.
+- `internal/imaging/` — decode/encode (GIF frames are fully composed), pure-Go effects, the
+  ImageMagick CLI runner (`magick.go`, `magickfx.go`) and the ffmpeg video pipeline
+  (`video.go`). A video decodes to an `Image` with `Video *VideoInfo` (fps, audio, GIFLike);
+  `EncodeContext` then emits MP4 with the audio (or GIF for GIFLike). Effects must preserve
+  `Video` when building a new `Image` and encode via `EncodeContext(ctx)`, not `Encode()`.
+  ImageMagick effects take raw bytes, so on video they run per frame (`videoFrames` in notsobot).
 - `internal/modules/{core,notsobot,moderation,search}/` — the commands.
 - `assets/` — `go:embed`ded fonts, templates, petpet frames, vaporwave images.
 
@@ -106,13 +115,19 @@ Each `cmd.Command` is defined once and serves both slash and text-prefix invocat
 - Aliases are per-guild, prefix-only, resolved in `Registry.Resolve`; alias arguments come
   before the invocation's own.
 - Stats: every run is recorded in `Registry.Stats()` (session) and `store.IncrementCommand` (all time).
-- For tests, `cmd.NewTestContext(registry, args)` returns a context whose replies are captured.
+- For tests, `cmd.NewTestContext(registry, args)` returns a context whose replies are captured;
+  `cmd.RunPrefix(registry, command, "args text")` runs a command through the real text-argument
+  binding (usage/invalid-argument replies included).
 
 ## Gotchas
 
 - **ImageMagick safety**: always pass input via `InputSpec` (explicit sniffed coder like
   `png:-`, never bare `-`) so untrusted data can't select MVG/SVG/MSL coders, and run any
   user text through `escapeText` (`@` reads files, `%` is a property escape).
+- **ffmpeg safety**: untrusted video only via `DecodeVideo`: bytes are sniffed first (MP4 `ftyp`,
+  not QuickTime), written to a per-job temp dir, and read with `-f mov -protocol_whitelist
+  file,pipe` under the command context; never pass a URL or user string to ffmpeg. Video limits
+  (10 s, 15 fps, 512 px longest side, never upscaled) are in `video.go`.
 - Go's `image/jpeg` rejects corrupted data; `glitch` renders through magick (libjpeg is
   lenient) and falls back to Go decoding only when magick is unavailable.
 - The embedded arial has no CJK/full-width glyphs (renders as boxes).

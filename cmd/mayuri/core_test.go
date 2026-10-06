@@ -33,7 +33,7 @@ func testRegistry(t *testing.T) *cmd.Registry {
 	r := cmd.NewRegistry(slog.Default(), st, "%")
 	r.Add(core.Commands()...)
 	r.AddMenus(core.UserInfoMenu())
-	nsb := notsobot.New(imagefind.New(""), &imaging.Magick{})
+	nsb := notsobot.New(imagefind.New(""), &imaging.Magick{}, &imaging.FFmpeg{})
 	cmds := nsb.Commands()
 	r.Add(cmds...)
 	r.AddMenus(nsb.Menus(cmds)...)
@@ -343,5 +343,73 @@ func TestRemindCommands(t *testing.T) {
 	}
 	if _, err := run(tzCmd, 1, map[string]any{"zone": "mars"}, false); err == nil {
 		t.Fatal("unknown zone should fail")
+	}
+}
+
+func TestInRoleHelp(t *testing.T) {
+	r := testRegistry(t)
+	rec, err := runCmd(t, r, "help", nil, 0, map[string]any{"command": "whohas"})
+	if err != nil || !strings.Contains(rec.Messages[0].Embeds[0].Description, "`%inrole <role...>`") {
+		t.Fatalf("help inrole: %v %+v", err, rec.Messages)
+	}
+	command, _ := r.Lookup("inrole")
+	if !command.GuildOnly || !command.Heavy {
+		t.Fatal("inrole must be server-only and heavy")
+	}
+}
+
+func TestConvertCommand(t *testing.T) {
+	r := testRegistry(t)
+	command, ok := r.Lookup("conv")
+	if !ok || command.Name != "convert" {
+		t.Fatal("convert not registered under alias conv")
+	}
+
+	// Slash form.
+	rec, err := runCmd(t, r, "convert", nil, 0, map[string]any{"from": "F", "to": "C", "value": 100.0})
+	if err != nil || rec.Messages[0].Content != "**100 °F = 37.78 °C**" {
+		t.Fatalf("slash: %v %+v", err, rec.Messages)
+	}
+
+	// Text form, through the real prefix argument binding.
+	for args, want := range map[string]string{
+		"c f 30":                  "**30 °C = 86 °F**",
+		"c k 0":                   "**0 °C = 273.15 K**",
+		"°F celsius -40":          "**-40 °F = -40 °C**",
+		"Kelvin Kelvin 12.5":      "**12.5 K = 12.5 K**",
+		"km mi 10":                "**10 km = 6.21 mi**",
+		"miles kilometres 26.2":   "**26.2 mi = 42.16 km**",
+		"ft m 100":                "**100 ft = 30.48 m**",
+		"meters feet 3":           "**3 m = 9.84 ft**",
+		"kmh mph 100":             "**100 km/h = 62.14 mph**",
+		"mph km/h 60":             "**60 mph = 96.56 km/h**",
+		"KPH MPH 50":              "**50 km/h = 31.07 mph**",
+		"mi km -1":                "**-1 mi = -1.61 km**",
+		`"miles per hour" kph 10`: "**10 mph = 16.09 km/h**",
+	} {
+		rec, err := cmd.RunPrefix(r, command, args)
+		if err != nil || len(rec.Messages) != 1 || rec.Messages[0].Content != want {
+			t.Errorf("%%convert %s: %v %+v; want %s", args, err, rec.Messages, want)
+		}
+	}
+	for _, args := range []string{"c f", "c f abc"} {
+		rec, err := cmd.RunPrefix(r, command, args)
+		if err != nil || !strings.Contains(rec.Messages[0].Content, "Usage: `%convert <from> <to> <value>`") {
+			t.Errorf("%%convert %s should reply with usage: %v %+v", args, err, rec.Messages)
+		}
+	}
+
+	// Errors.
+	_, err = cmd.RunPrefix(r, command, "rankine c 10")
+	if err == nil || !strings.Contains(err.Error(), "`rankine` isn't a supported unit") || !strings.Contains(err.Error(), "Kelvin (K)") || !strings.Contains(err.Error(), "Feet (ft)") || !strings.Contains(err.Error(), "Miles per hour (mph)") {
+		t.Fatalf("unknown unit: %v", err)
+	}
+	_, err = cmd.RunPrefix(r, command, "km mph 10")
+	if err == nil || !strings.Contains(err.Error(), "measure different things") {
+		t.Fatalf("different kinds: %v", err)
+	}
+	_, err = cmd.RunPrefix(r, command, "c f -300")
+	if err == nil || !strings.Contains(err.Error(), "below absolute zero") {
+		t.Fatalf("absolute zero: %v", err)
 	}
 }

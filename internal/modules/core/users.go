@@ -8,6 +8,7 @@ import (
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
+	"github.com/disgoorg/snowflake/v2"
 
 	"mayuri2000/internal/cmd"
 )
@@ -313,4 +314,125 @@ func managedBy(r discord.Role) string {
 		return "Integration"
 	}
 	return ""
+}
+
+const (
+	memberPageSize = 1000
+	// maxMemberScan bounds /inrole on very large servers (25 requests).
+	maxMemberScan = 25000
+)
+
+// memberLister is the part of the REST client /inrole needs.
+type memberLister interface {
+	GetMembers(guildID snowflake.ID, limit int, after snowflake.ID, opts ...rest.RequestOpt) ([]discord.Member, error)
+}
+
+// errMembersIntent explains the one setup step listing members depends on.
+var errMembersIntent = cmd.Errorf("I can't list server members because the **Server Members** intent is disabled. " +
+	"The bot owner needs to enable it in the Discord Developer Portal (Bot → Privileged Gateway Intents).")
+
+// roleMembers pages through the server's members and returns those holding
+// roleID (everyone, for the @everyone role). truncated reports that the scan
+// stopped at maxMemberScan with more members possibly remaining.
+func roleMembers(l memberLister, guildID, roleID snowflake.ID) (members []discord.Member, truncated bool, err error) {
+	everyone := roleID == guildID
+	var after snowflake.ID
+	for scanned := 0; scanned < maxMemberScan; {
+		page, err := l.GetMembers(guildID, memberPageSize, after)
+		if err != nil {
+			// Listing members needs the Server Members privileged intent;
+			// without it Discord answers with Missing Access.
+			if rest.IsJSONErrorCode(err, rest.JSONErrorCodeMissingAccess) {
+				return nil, false, errMembersIntent
+			}
+			return nil, false, err
+		}
+		for _, m := range page {
+			if everyone || slices.Contains(m.RoleIDs, roleID) {
+				members = append(members, m)
+			}
+		}
+		scanned += len(page)
+		if len(page) < memberPageSize {
+			return members, false, nil
+		}
+		after = page[len(page)-1].User.ID
+	}
+	return members, true, nil
+}
+
+const membersPerPage = 20
+
+func inRoleCommand() *cmd.Command {
+	return &cmd.Command{
+		Name:        "inrole",
+		Aliases:     []string{"rolemembers", "whohas", "members"},
+		Category:    "Info",
+		Description: "List the members who have a role",
+		GuildOnly:   true,
+		// Paging the member list can exceed Discord's 3s reply window.
+		Heavy: true,
+		Options: []cmd.Option{
+			{Name: "role", Description: "Role mention, ID or name", Type: cmd.Role, Required: true, Rest: true},
+		},
+		Run: inRole,
+	}
+}
+
+// memberDisplayName is what Discord shows: server nickname, then global
+// name, then username.
+func memberDisplayName(m discord.Member) string {
+	if m.Nick != nil && *m.Nick != "" {
+		return *m.Nick
+	}
+	return m.User.EffectiveName()
+}
+
+// roleMemberPages renders members sorted by display name, 20 per page.
+func roleMemberPages(role discord.Role, members []discord.Member, truncated bool) []cmd.Page {
+	sorted := slices.Clone(members)
+	slices.SortStableFunc(sorted, func(a, b discord.Member) int {
+		if c := strings.Compare(strings.ToLower(memberDisplayName(a)), strings.ToLower(memberDisplayName(b))); c != 0 {
+			return c
+		}
+		return strings.Compare(a.User.Username, b.User.Username)
+	})
+	footer := fmt.Sprintf("%d member(s)", len(sorted))
+	if truncated {
+		footer += fmt.Sprintf(" · may be incomplete: only the first %d server members were scanned", maxMemberScan)
+	}
+	var pages []cmd.Page
+	for i := 0; i < len(sorted); i += membersPerPage {
+		var b strings.Builder
+		for _, m := range sorted[i:min(i+membersPerPage, len(sorted))] {
+			fmt.Fprintf(&b, "%s `%s`\n", m.User.Mention(), m.User.Username)
+		}
+		pages = append(pages, cmd.Page{Embed: &discord.Embed{
+			Title:       truncateRunes(fmt.Sprintf("Members with %s (%d)", role.Name, len(sorted)), 256),
+			Description: b.String(),
+			Color:       role.Color,
+			Footer:      &discord.EmbedFooter{Text: footer},
+		}})
+	}
+	return pages
+}
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
+}
+
+func inRole(c *cmd.Context) error {
+	role, _ := c.OptRole("role")
+	members, truncated, err := roleMembers(c.Client.Rest, *c.GuildID, role.ID)
+	if err != nil {
+		return err
+	}
+	if len(members) == 0 {
+		// Mentions in replies don't ping (allowed mentions are disabled).
+		return c.Reply(fmt.Sprintf("%s has no members.", role.Mention()))
+	}
+	return c.Paginate(roleMemberPages(role, members, truncated))
 }

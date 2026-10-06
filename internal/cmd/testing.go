@@ -25,3 +25,19 @@ func NewTestContext(reg *Registry, args map[string]any) (*Context, *Recorder) {
 	}
 	return &Context{Context: context.Background(), Registry: reg, Prefix: "/", args: args, resp: rec}, rec
 }
+
+// RunPrefix runs a command as if invoked with the text prefix "%" and the
+// given argument text, using the same argument binding as real messages.
+// It returns the recorder and the command's error (nil if the arguments
+// were rejected; the rejection reply is recorded instead).
+func RunPrefix(reg *Registry, command *Command, argText string) (*Recorder, error) {
+	c, rec := NewTestContext(reg, nil)
+	c.Prefix = "%"
+	c.SourceMessage = &discord.Message{}
+	c.Invocation = InvokedPrefix
+	if problem := reg.bindPrefixArgs(c, command, "%", argText, nil); problem != "" {
+		_ = c.Reply(problem)
+		return rec, nil
+	}
+	return rec, command.Run(c)
+}

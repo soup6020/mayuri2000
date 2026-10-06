@@ -31,7 +31,7 @@ const (
 	MaxFrames = 200
 )
 
-var ErrNotImage = errors.New("that doesn't look like a supported image (png, jpeg, gif or webp)")
+var ErrNotImage = errors.New("that doesn't look like a supported image (png, jpeg, gif or webp) or MP4 video")
 
 // httpClient refuses non-public addresses: image URLs come from users and
 // the result is posted back, which would otherwise leak internal content.
@@ -73,9 +73,21 @@ func Sniff(data []byte) string {
 		return "gif"
 	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
 		return "webp"
+	case len(data) >= 12 && string(data[4:8]) == "ftyp":
+		// ISO base media file: QuickTime's major brand means MOV, anything
+		// else (isom, mp41, mp42, avc1, ...) is treated as MP4.
+		if string(data[8:12]) == "qt  " {
+			return "mov"
+		}
+		return "mp4"
+	case bytes.HasPrefix(data, []byte("\x1a\x45\xdf\xa3")):
+		return "webm" // EBML: WebM/Matroska
 	}
 	return ""
 }
+
+// IsVideo reports whether a sniffed format is a video container.
+func IsVideo(format string) bool { return format == "mp4" || format == "mov" || format == "webm" }
 
 // Image is a decoded still or animated image. Frames are fully composed, so
 // each one can be transformed independently.
@@ -84,6 +96,9 @@ type Image struct {
 	// Delays per frame in 100ths of a second (animated only).
 	Delays []int
 	Format string
+	// Video is set when the image was decoded from a video; encoding then
+	// produces a video (or a GIF for GIF-like sources) again.
+	Video *VideoInfo
 }
 
 func (m *Image) Animated() bool      { return len(m.Frames) > 1 }
@@ -92,8 +107,13 @@ func (m *Image) First() *image.NRGBA { return m.Frames[0] }
 // Decode decodes png, jpeg, webp and (animated) gif data.
 func Decode(data []byte) (*Image, error) {
 	format := Sniff(data)
-	if format == "" {
+	switch format {
+	case "":
 		return nil, ErrNotImage
+	case "mp4":
+		return nil, ErrVideoInput
+	case "mov", "webm":
+		return nil, ErrUnsupportedVideo
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
@@ -173,7 +193,7 @@ func cloneNRGBA(src *image.NRGBA) *image.NRGBA {
 
 // Map applies fn to every frame.
 func (m *Image) Map(fn func(*image.NRGBA) *image.NRGBA) *Image {
-	out := &Image{Delays: m.Delays, Format: m.Format, Frames: make([]*image.NRGBA, len(m.Frames))}
+	out := &Image{Delays: m.Delays, Format: m.Format, Video: m.Video, Frames: make([]*image.NRGBA, len(m.Frames))}
 	for i, f := range m.Frames {
 		out.Frames[i] = fn(f)
 	}
@@ -181,8 +201,19 @@ func (m *Image) Map(fn func(*image.NRGBA) *image.NRGBA) *Image {
 }
 
 // Encode encodes the image as a GIF when animated, otherwise PNG. It returns
-// the encoded data and the file extension.
+// the encoded data and the file extension. Video-derived images need
+// EncodeContext.
 func (m *Image) Encode() ([]byte, string, error) {
+	return m.EncodeContext(context.Background())
+}
+
+// EncodeContext encodes video-derived images as MP4 (keeping their audio),
+// GIF-like video and other animations as GIF, and stills as PNG.
+func (m *Image) EncodeContext(ctx context.Context) ([]byte, string, error) {
+	if m.Video != nil && !m.Video.GIFLike {
+		b, err := encodeMP4(ctx, m)
+		return b, "mp4", err
+	}
 	if m.Animated() {
 		b, err := EncodeGIF(m.Frames, m.Delays)
 		return b, "gif", err

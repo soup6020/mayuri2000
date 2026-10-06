@@ -170,14 +170,14 @@ func TestPureEffects(t *testing.T) {
 		check(t, "glitch_gif", data, true)
 	})
 	t.Run("iascii", func(t *testing.T) {
-		data, _, err := ASCIIArt(still, 60)
+		data, _, err := ASCIIArt(context.Background(), still, 60)
 		if err != nil {
 			t.Fatal(err)
 		}
 		check(t, "iascii", data, false)
 	})
 	t.Run("gascii", func(t *testing.T) {
-		data, _, err := ASCIIArt(anim, 40)
+		data, _, err := ASCIIArt(context.Background(), anim, 40)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -272,7 +272,7 @@ func (m *Magick) Watercolor(ctx context.Context, src *Image, o WatercolorOpts) (
 		"-brightness-contrast", "0x" + strconv.FormatFloat(o.Contrast, 'f', 1, 64),
 		"-depth", "8", "png:-",
 	}
-	out := &Image{Delays: src.Delays, Format: src.Format}
+	out := &Image{Delays: src.Delays, Format: src.Format, Video: src.Video}
 	for _, f := range src.Frames {
 		frame, err := EncodePNG(f)
 		if err != nil {
@@ -293,5 +293,14 @@ func (m *Magick) Watercolor(ctx context.Context, src *Image, o WatercolorOpts) (
 		}
 		out.Frames = append(out.Frames, painted)
 	}
-	return out.Encode()
+	return out.EncodeContext(ctx)
+}
+
+// LiquidFrame applies gmagik's per-frame liquid rescale to one PNG frame.
+func (m *Magick) LiquidFrame(ctx context.Context, frame []byte) ([]byte, error) {
+	return m.Run(ctx, frame, "png:-[0]",
+		"-resize", "512x512>",
+		"-liquid-rescale", "50x50%+1+0",
+		"-liquid-rescale", "150x150%+2+0",
+		"-depth", "8", "png:-")
 }

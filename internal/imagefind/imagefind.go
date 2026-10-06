@@ -26,8 +26,70 @@ var (
 	emojiRe     = regexp.MustCompile(`<(a?):[a-zA-Z0-9_]+:(\d+)>`)
 	mentionRe   = regexp.MustCompile(`<@!?(\d{15,21})>`)
 	idRe        = regexp.MustCompile(`\b\d{17,21}\b`)
-	tenorGifRe  = regexp.MustCompile(`https://media\d*\.tenor\.com/[A-Za-z0-9_/-]+\.gif`)
+	videoLinkRe = regexp.MustCompile(`(?i)https?://[^"'\s<>]*\.mp4(?:\?[^"'\s<>]*)?`)
+	klipyRe     = regexp.MustCompile(`https?://(?:www\.)?klipy\.com/(?:gifs|clips|stickers)/[^\s<>]+`)
+	// Tenor's tags carry other attributes (e.g. class) before property.
+	tenorMP4Re = regexp.MustCompile(`<meta[^>]*\sproperty="og:video"[^>]*\scontent="(https://media\d*\.tenor\.com/[^"]+\.mp4)"`)
 )
+
+// Kind says what a source is and how its output should look.
+type Kind int
+
+const (
+	// Image is a still or animated image (or a link of unknown type).
+	Image Kind = iota
+	// Video is an MP4 video; output is MP4 with its audio.
+	Video
+	// GIFVideo is a Tenor or Klipy GIF served as MP4; output is a GIF.
+	GIFVideo
+)
+
+// Source is an input found for a command.
+type Source struct {
+	URL  string
+	Kind Kind
+}
+
+// isGIFHost reports whether a URL is served by Tenor or Klipy, whose MP4s
+// are GIFs posted from Discord's picker.
+func isGIFHost(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	h := strings.ToLower(u.Hostname())
+	for _, d := range []string{"tenor.com", "klipy.com"} {
+		if h == d || strings.HasSuffix(h, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// videoSource classifies an MP4 URL by its host.
+func videoSource(u string) Source {
+	if isGIFHost(u) {
+		return Source{URL: u, Kind: GIFVideo}
+	}
+	return Source{URL: u, Kind: Video}
+}
+
+// linkSource classifies an arbitrary link; its content decides later
+// whether it is an image or a video.
+func linkSource(u string) Source {
+	if isGIFHost(u) {
+		return Source{URL: u, Kind: GIFVideo}
+	}
+	return Source{URL: u, Kind: Image}
+}
+
+func images(urls ...string) []Source {
+	out := make([]Source, 0, len(urls))
+	for _, u := range urls {
+		out = append(out, Source{URL: u, Kind: Image})
+	}
+	return out
+}
 
 // LooksLikeImageRef reports whether a prefix token is plausibly an image
 // reference (URL, emoji, mention or ID) rather than another argument.
@@ -47,41 +109,65 @@ func Options(extra ...cmd.Option) []cmd.Option {
 type Finder struct {
 	TenorKey string
 	http     *http.Client
+
+	// getMessage and sleep are overridable for tests; by default they use
+	// the command's REST client and time.Sleep.
+	getMessage func(c *cmd.Context, channelID, messageID snowflake.ID) (*discord.Message, error)
+	sleep      func(time.Duration)
 }
 
 func New(tenorKey string) *Finder {
-	return &Finder{TenorKey: tenorKey, http: &http.Client{Timeout: 15 * time.Second}}
+	return &Finder{
+		TenorKey: tenorKey,
+		http:     &http.Client{Timeout: 15 * time.Second},
+		getMessage: func(c *cmd.Context, channelID, messageID snowflake.ID) (*discord.Message, error) {
+			return c.Client.Rest.GetMessage(channelID, messageID)
+		},
+		sleep: time.Sleep,
+	}
 }
 
-var ErrNotFound = cmd.Errorf("I couldn't find an image. Attach one, pass a URL, emoji or user, or reply to a message with an image.")
+var ErrNotFound = cmd.Errorf("I couldn't find an image or MP4 video. Attach one, pass a URL, emoji or user, or reply to a message with one.")
 
-// Find returns up to limit image URLs for the command, searching explicit
+// Embed wait for links in the command's own message: Discord usually adds
+// the GIF embed a moment after the message is created.
+const (
+	embedRefetches = 3
+	embedWait      = time.Second
+)
+
+// Find returns up to limit sources for the command, searching explicit
 // arguments first, then replies/targets and finally recent channel history.
-func (f *Finder) Find(c *cmd.Context, limit int) ([]string, error) {
-	var urls []string
-	add := func(u ...string) {
-		for _, x := range u {
-			if x != "" && len(urls) < limit {
-				urls = append(urls, x)
+func (f *Finder) Find(c *cmd.Context, limit int) ([]Source, error) {
+	var srcs []Source
+	add := func(ss ...Source) {
+		for _, s := range ss {
+			if s.URL != "" && len(srcs) < limit {
+				srcs = append(srcs, s)
 			}
 		}
 	}
 
 	if a, ok := c.OptAttachment("image"); ok {
-		add(a.URL)
+		add(attachmentSource(a))
 	}
 	text := c.String("url")
 	if len(c.Extras) > 0 {
 		text = strings.TrimSpace(text + " " + strings.Join(c.Extras, " "))
 	}
 	if text != "" {
+		// A Tenor/Klipy link in the command's own message: prefer the GIF
+		// embed Discord attaches to it (Klipy pages can't be fetched).
+		if c.SourceMessage != nil && (tenorRe.MatchString(text) || klipyRe.MatchString(text)) {
+			add(f.embedsOf(f.awaitEmbeds(c))...)
+		}
 		add(f.fromText(c, text, true)...)
 	}
 	if u, ok := c.OptUser("user"); ok {
-		add(Avatar(u))
+		add(Source{URL: Avatar(u)})
 	}
 	if c.TargetUser != nil {
-		add(Avatar(*c.TargetUser))
+		add(Source{URL: Avatar(*c.TargetUser)})
 	}
 	if m := c.SourceMessage; m != nil {
 		// The first attachment was already taken as the "image" option.
@@ -89,8 +175,8 @@ func (f *Finder) Find(c *cmd.Context, limit int) ([]string, error) {
 			add(f.fromMessage(c, discord.Message{Attachments: m.Attachments[1:]})...)
 		}
 	}
-	if len(urls) > 0 {
-		return urls, nil
+	if len(srcs) > 0 {
+		return srcs, nil
 	}
 
 	if c.TargetMessage != nil {
@@ -99,8 +185,8 @@ func (f *Finder) Find(c *cmd.Context, limit int) ([]string, error) {
 	if m := c.SourceMessage; m != nil && m.ReferencedMessage != nil {
 		add(f.fromMessage(c, *m.ReferencedMessage)...)
 	}
-	if len(urls) > 0 {
-		return urls, nil
+	if len(srcs) > 0 {
+		return srcs, nil
 	}
 
 	var before snowflake.ID
@@ -113,74 +199,119 @@ func (f *Finder) Find(c *cmd.Context, limit int) ([]string, error) {
 			add(f.fromMessage(c, m)...)
 		}
 	}
-	if len(urls) == 0 {
+	if len(srcs) == 0 {
 		return nil, ErrNotFound
 	}
-	return urls, nil
+	return srcs, nil
 }
 
-func (f *Finder) fromMessage(c *cmd.Context, m discord.Message) []string {
-	var urls []string
-	for _, a := range m.Attachments {
-		if a.ContentType != nil && strings.HasPrefix(*a.ContentType, "image/") {
-			urls = append(urls, a.URL)
+// awaitEmbeds re-fetches the command's message until Discord has attached
+// embeds to it (or gives up), returning the latest copy.
+func (f *Finder) awaitEmbeds(c *cmd.Context) discord.Message {
+	m := *c.SourceMessage
+	for i := 0; i < embedRefetches && len(m.Embeds) == 0; i++ {
+		f.sleep(embedWait)
+		if c.Err() != nil {
+			break
+		}
+		if fresh, err := f.getMessage(c, m.ChannelID, m.ID); err == nil && fresh != nil {
+			m = *fresh
 		}
 	}
+	return m
+}
+
+func attachmentSource(a discord.Attachment) Source {
+	if a.ContentType != nil && *a.ContentType == "video/mp4" {
+		return videoSource(a.URL)
+	}
+	return Source{URL: a.URL, Kind: Image}
+}
+
+// embedsOf returns the media of a message's embeds: GIF embeds (Tenor and
+// Klipy posts) as GIF videos, video embeds as videos, and images.
+func (f *Finder) embedsOf(m discord.Message) []Source {
+	var srcs []Source
 	for _, e := range m.Embeds {
 		switch {
+		case e.Type == discord.EmbedTypeGifV && e.Video != nil && e.Video.URL != "":
+			srcs = append(srcs, Source{URL: e.Video.URL, Kind: GIFVideo})
+		case e.Type == discord.EmbedTypeVideo && e.Video != nil && strings.Contains(strings.ToLower(e.Video.URL), ".mp4"):
+			srcs = append(srcs, videoSource(e.Video.URL))
 		case e.Image != nil && e.Image.URL != "":
-			urls = append(urls, e.Image.URL)
-		case e.Provider != nil && strings.EqualFold(e.Provider.Name, "tenor"):
-			// handled via the content link below
+			srcs = append(srcs, Source{URL: e.Image.URL, Kind: Image})
 		case e.Thumbnail != nil && e.Thumbnail.URL != "" && e.Type == discord.EmbedTypeImage:
-			urls = append(urls, e.Thumbnail.URL)
+			srcs = append(srcs, Source{URL: e.Thumbnail.URL, Kind: Image})
 		}
 	}
-	urls = append(urls, f.fromText(c, m.Content, false)...)
-	return urls
+	return srcs
+}
+
+func (f *Finder) fromMessage(c *cmd.Context, m discord.Message) []Source {
+	var srcs []Source
+	for _, a := range m.Attachments {
+		if a.ContentType == nil {
+			continue
+		}
+		if ct := *a.ContentType; strings.HasPrefix(ct, "image/") || ct == "video/mp4" {
+			srcs = append(srcs, attachmentSource(a))
+		}
+	}
+	embeds := f.embedsOf(m)
+	srcs = append(srcs, embeds...)
+	// Without an embed, fall back to the message text (e.g. Tenor links
+	// whose embed hasn't loaded).
+	if len(embeds) == 0 {
+		srcs = append(srcs, f.fromText(c, m.Content, false)...)
+	}
+	return srcs
 }
 
 // fromText extracts image references from free text. When explicit is set
 // (the user typed it as an argument) mentions, raw IDs and arbitrary links
 // are honoured too.
-func (f *Finder) fromText(c *cmd.Context, text string, explicit bool) []string {
-	var urls []string
+func (f *Finder) fromText(c *cmd.Context, text string, explicit bool) []Source {
+	var srcs []Source
 	for _, m := range tenorRe.FindAllStringSubmatch(text, -1) {
-		if u := f.tenorGIF(c, m[0], m[1]); u != "" {
-			urls = append(urls, u)
+		if u := f.tenorMP4(c, m[0], m[1]); u != "" {
+			srcs = append(srcs, Source{URL: u, Kind: GIFVideo})
 		}
 	}
-	urls = append(urls, imageLinkRe.FindAllString(text, -1)...)
+	srcs = append(srcs, images(imageLinkRe.FindAllString(text, -1)...)...)
+	for _, u := range videoLinkRe.FindAllString(text, -1) {
+		srcs = append(srcs, videoSource(u))
+	}
 	for _, m := range emojiRe.FindAllStringSubmatch(text, -1) {
 		ext := "png"
 		if m[1] == "a" {
 			ext = "gif"
 		}
-		urls = append(urls, fmt.Sprintf("https://cdn.discordapp.com/emojis/%s.%s?size=512", m[2], ext))
+		srcs = append(srcs, Source{URL: fmt.Sprintf("https://cdn.discordapp.com/emojis/%s.%s?size=512", m[2], ext)})
 	}
 	if !explicit {
-		return urls
+		return srcs
 	}
 	for _, m := range mentionRe.FindAllStringSubmatch(text, -1) {
 		if u, ok := user(c, m[1]); ok {
-			urls = append(urls, Avatar(u))
+			srcs = append(srcs, Source{URL: Avatar(u)})
 		}
 	}
-	if len(urls) == 0 {
+	if len(srcs) == 0 {
 		for _, tok := range strings.Fields(text) {
-			if anyLinkRe.MatchString(tok) && !tenorRe.MatchString(tok) {
-				urls = append(urls, tok)
+			// Klipy pages block bots; their GIFs come through embeds.
+			if anyLinkRe.MatchString(tok) && !tenorRe.MatchString(tok) && !klipyRe.MatchString(tok) {
+				srcs = append(srcs, linkSource(tok))
 			}
 		}
 	}
-	if len(urls) == 0 {
+	if len(srcs) == 0 {
 		for _, id := range idRe.FindAllString(text, -1) {
 			if u, ok := user(c, id); ok {
-				urls = append(urls, Avatar(u))
+				srcs = append(srcs, Source{URL: Avatar(u)})
 			}
 		}
 	}
-	return urls
+	return srcs
 }
 
 func user(c *cmd.Context, raw string) (discord.User, bool) {
@@ -205,9 +336,10 @@ func Avatar(u discord.User) string {
 	return u.EffectiveAvatarURL(discord.WithSize(1024))
 }
 
-func (f *Finder) tenorGIF(ctx context.Context, link, id string) string {
+// tenorMP4 resolves a Tenor view link to the GIF's MP4 rendition.
+func (f *Finder) tenorMP4(ctx context.Context, link, id string) string {
 	if f.TenorKey != "" {
-		q := url.Values{"ids": {id}, "key": {f.TenorKey}, "client_key": {"mayuri2000"}, "media_filter": {"gif"}}
+		q := url.Values{"ids": {id}, "key": {f.TenorKey}, "client_key": {"mayuri2000"}, "media_filter": {"mp4"}}
 		var out struct {
 			Results []struct {
 				MediaFormats map[string]struct {
@@ -217,18 +349,26 @@ func (f *Finder) tenorGIF(ctx context.Context, link, id string) string {
 		}
 		if err := f.getJSON(ctx, "https://tenor.googleapis.com/v2/posts?"+q.Encode(), &out); err == nil {
 			for _, r := range out.Results {
-				if g, ok := r.MediaFormats["gif"]; ok && g.URL != "" {
+				if g, ok := r.MediaFormats["mp4"]; ok && g.URL != "" {
 					return g.URL
 				}
 			}
 		}
 	}
-	// Without an API key, scrape the GIF URL from the view page.
+	// Without an API key, read the MP4 from the view page's og:video.
 	body, err := f.get(ctx, link)
 	if err != nil {
 		return ""
 	}
-	return tenorGifRe.FindString(body)
+	return ParseTenorMP4(body)
+}
+
+// ParseTenorMP4 extracts the MP4 URL from a Tenor view page.
+func ParseTenorMP4(page string) string {
+	if m := tenorMP4Re.FindStringSubmatch(page); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 func (f *Finder) get(ctx context.Context, u string) (string, error) {

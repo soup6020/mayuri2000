@@ -12,7 +12,9 @@ import (
 // ImageMagick's lenient JPEG decoder; GIFs get their colour table scrambled
 // as in NotSoBot's do_glitch. It returns the data and extension.
 func Glitch(ctx context.Context, m *Magick, raw []byte, src *Image, amount, seed, iterations int) ([]byte, string, error) {
-	if src.Animated() {
+	// GIFs get their colour table scrambled. That has no MP4 equivalent,
+	// so video (including Tenor/Klipy GIFs) glitches its first frame.
+	if src.Animated() && src.Video == nil {
 		return glitchGIF(raw), "gif", nil
 	}
 	base, err := EncodeJPEG(src.First(), 85)

@@ -18,6 +18,7 @@
         { pkgs, self', ... }:
         let
           magick = pkgs.imagemagick.override { liblqr1Support = true; };
+          ffmpeg = pkgs.ffmpeg-headless;
         in
         {
           packages.default = pkgs.buildGoModule {
@@ -31,7 +32,10 @@
               "-s"
               "-w"
             ];
-            nativeCheckInputs = [ magick ];
+            nativeCheckInputs = [
+              magick
+              ffmpeg
+            ];
             # subPackages would limit tests to cmd/mayuri; run the whole suite.
             checkPhase = ''
               runHook preCheck
@@ -77,6 +81,7 @@
               Entrypoint = [ (pkgs.lib.getExe self'.packages.default) ];
               Env = [
                 "MAGICK_PATH=${pkgs.lib.getExe' magick "magick"}"
+                "FFMPEG_PATH=${pkgs.lib.getExe' ffmpeg "ffmpeg"}"
                 "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
                 "DATABASE_PATH=/data/mayuri.db"
                 "TMPDIR=/tmp"
@@ -91,6 +96,7 @@
               pkgs.gopls
               pkgs.golangci-lint
               pkgs.sqlite
+              ffmpeg
               pkgs.openspec
               magick
             ];

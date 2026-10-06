@@ -15,13 +15,14 @@ linters:
     - wastedassign
   settings:
     errcheck:
-      # Closing read-only resources and removing temp files can't meaningfully
+      # Closing read-only resources and removing temp files/dirs can't meaningfully
       # fail in a way callers could handle. Close on writable files is still
       # checked.
       exclude-functions:
         - (io.ReadCloser).Close
         - (*database/sql.Rows).Close
         - os.Remove
+        - os.RemoveAll
 
 formatters:
   enable:

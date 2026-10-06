@@ -3,6 +3,7 @@ package imaging
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"image"
 	"image/color"
@@ -239,14 +240,14 @@ func ImageToASCII(img *image.NRGBA, cols int) string {
 
 // ASCIIArt renders img (or up to 20 frames of an animation) as an image of
 // ASCII art, the replacement for NotSoBot's aalib-based iascii/gascii.
-func ASCIIArt(m *Image, cols int) ([]byte, string, error) {
+func ASCIIArt(ctx context.Context, m *Image, cols int) ([]byte, string, error) {
 	frames := m.Frames
 	if len(frames) > 20 {
 		frames = frames[:20]
 	}
-	out := &Image{Delays: m.Delays}
+	out := &Image{Delays: m.Delays, Video: m.Video}
 	for _, f := range frames {
 		out.Frames = append(out.Frames, RenderText(ImageToASCII(f, cols), color.Black, color.White, 12))
 	}
-	return out.Encode()
+	return out.EncodeContext(ctx)
 }

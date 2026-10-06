@@ -66,8 +66,13 @@ func (m *Magick) Run(ctx context.Context, input []byte, args ...string) ([]byte,
 // InputSpec returns the stdin spec with an explicit coder for data.
 func InputSpec(data []byte) (string, error) {
 	f := Sniff(data)
-	if f == "" {
+	switch f {
+	case "":
 		return "", ErrNotImage
+	case "mp4":
+		return "", ErrVideoInput
+	case "mov", "webm":
+		return "", ErrUnsupportedVideo
 	}
 	return f + ":-", nil
 }

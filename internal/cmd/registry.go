@@ -361,30 +361,38 @@ func (r *Registry) onMessage(e *events.MessageCreate) {
 		}
 	}
 
+	if problem := r.bindPrefixArgs(c, cmd, prefix, argText, msg.Attachments); problem != "" {
+		_ = c.Reply(problem)
+		return
+	}
+	perms, guildOnly, heavy := cmd.effective()
+	r.run(c, heavy, perms, guildOnly, cmd.Run)
+}
+
+// bindPrefixArgs fills c's options from prefix argument text and message
+// attachments. It returns the reply to send instead of running the command
+// when arguments are missing or invalid, or "" on success.
+func (r *Registry) bindPrefixArgs(c *Context, cmd *Command, prefix, argText string, atts []discord.Attachment) string {
 	args, missing, extras := assign(cmd.Options, strings.TrimSpace(argText))
 	if len(missing) > 0 {
-		_ = c.Reply(fmt.Sprintf("Missing required argument `%s`.\nUsage: `%s`", missing[0].Name, Usage(prefix, cmd)))
-		return
+		return fmt.Sprintf("Missing required argument `%s`.\nUsage: `%s`", missing[0].Name, Usage(prefix, cmd))
 	}
 	c.Extras = extras
 	for _, a := range args {
 		v, err := r.convert(c, a)
 		if err != nil {
-			_ = c.Reply(fmt.Sprintf("Invalid value for `%s`: %s\nUsage: `%s`", a.opt.Name, err, Usage(prefix, cmd)))
-			return
+			return fmt.Sprintf("Invalid value for `%s`: %s\nUsage: `%s`", a.opt.Name, err, Usage(prefix, cmd))
 		}
 		c.args[a.opt.Name] = v
 	}
 	// Attachment options are filled from the message's attachments in order.
-	atts := msg.Attachments
 	for _, o := range cmd.Options {
 		if o.Type == Attachment && len(atts) > 0 {
 			c.args[o.Name] = atts[0]
 			atts = atts[1:]
 		}
 	}
-	perms, guildOnly, heavy := cmd.effective()
-	r.run(c, heavy, perms, guildOnly, cmd.Run)
+	return ""
 }
 
 // Resolve finds the command for prefix-stripped input, expanding guild
@@ -452,10 +460,14 @@ func (r *Registry) convert(c *Context, a rawArg) (any, error) {
 		if err != nil {
 			return nil, fmt.Errorf("`%s` is not a whole number", a.value)
 		}
-		if a.opt.Min != nil && n < *a.opt.Min {
+		tooLow := a.opt.Min != nil && n < *a.opt.Min
+		tooHigh := a.opt.Max != nil && n > *a.opt.Max
+		switch {
+		case (tooLow || tooHigh) && a.opt.Min != nil && a.opt.Max != nil:
+			return nil, fmt.Errorf("must be between %d and %d", *a.opt.Min, *a.opt.Max)
+		case tooLow:
 			return nil, fmt.Errorf("must be at least %d", *a.opt.Min)
-		}
-		if a.opt.Max != nil && n > *a.opt.Max {
+		case tooHigh:
 			return nil, fmt.Errorf("must be at most %d", *a.opt.Max)
 		}
 		return n, nil

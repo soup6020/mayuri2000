@@ -20,6 +20,7 @@ type Config struct {
 	TenorAPIKey  string
 	GeniusToken  string
 	MagickPath   string
+	FFmpegPath   string
 	LogLevel     slog.Level
 	RSSInterval  time.Duration
 }
@@ -51,6 +52,7 @@ func Load() (*Config, error) {
 		TenorAPIKey:  tenor,
 		GeniusToken:  genius,
 		MagickPath:   env("MAGICK_PATH", "magick"),
+		FFmpegPath:   env("FFMPEG_PATH", "ffmpeg"),
 	}
 
 	for _, raw := range strings.FieldsFunc(os.Getenv("DEV_GUILD_IDS"), func(r rune) bool { return r == ',' || r == ' ' }) {

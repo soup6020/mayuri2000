@@ -47,7 +47,9 @@ func Commands() []*cmd.Command {
 		timezoneCommand(),
 		userInfoCommand(),
 		roleInfoCommand(),
+		inRoleCommand(),
 		base64Command(),
+		convertCommand(),
 	}
 }
 
