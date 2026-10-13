@@ -9,4 +9,4 @@
 
 - [x] 2.1 Update the README context-menu list to *Apps → Magik / JPEG / Glitch / GMagik / Invert*; verify by reading the section
 - [x] 2.2 Run `golangci-lint run ./...` (0 issues) and `nix flake check`; verify both pass
-- [ ] 2.3 Manually: after restarting the bot, right-click a message with a still image and with a GIF → Apps → GMagik; verify the replies are a melting GIF and a magik'd GIF, and that Vaporwave is gone from the menu (Discord may need a client refresh, Ctrl+R)
+- [x] 2.3 Manually: after restarting the bot, right-click a message with a still image and with a GIF → Apps → GMagik; verify the replies are a melting GIF and a magik'd GIF, and that Vaporwave is gone from the menu (Discord may need a client refresh, Ctrl+R)

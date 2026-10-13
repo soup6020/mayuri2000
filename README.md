@@ -153,11 +153,15 @@ podman load < result # or: docker load < result
 `compose.yaml` is a minimal example that reads its configuration from `.env`:
 
 ```sh
-nix build .#image && docker load < result
-cp env.example .env        # then set DISCORD_TOKEN (and anything else) in .env
-docker compose up -d
+cp env.example .env    # then set DISCORD_TOKEN
+./docker-up.sh         # builds and loads the image with Nix if it's missing, then `docker compose up -d`
 docker compose logs -f
 ```
+
+`docker-up.sh` only builds the image when `mayuri2000:latest` isn't present; after
+updating the bot, rebuild it yourself with `nix build .#image && docker load < result`
+(then `./docker-up.sh` recreates the container). Extra arguments are passed to
+`docker compose up`.
 
 The database is kept in the `mayuri-data` volume.
 

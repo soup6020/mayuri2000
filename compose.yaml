@@ -1,12 +1,13 @@
 # Example Docker Compose setup for Mayuri2000.
 #
-# Build and load the image first (it is built by Nix, not a Dockerfile):
-#   nix build .#image && docker load < result
-#
-# Then copy env.example to .env, fill in DISCORD_TOKEN, and start the bot:
+# The image is built by Nix, not a Dockerfile. Copy env.example to .env,
+# fill in DISCORD_TOKEN, then start the bot with the helper script, which
+# builds and loads the image first if it isn't present locally:
 #   cp env.example .env
-#   docker compose up -d
+#   ./docker-up.sh
 #   docker compose logs -f
+#
+# To update after changing the bot: nix build .#image && docker load < result
 
 services:
   mayuri:
