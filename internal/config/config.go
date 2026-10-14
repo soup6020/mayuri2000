@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/disgoorg/snowflake/v2"
+
+	"mayuri2000/internal/sandbox"
 )
 
 type Config struct {
@@ -23,6 +25,9 @@ type Config struct {
 	FFmpegPath   string
 	LogLevel     slog.Level
 	RSSInterval  time.Duration
+	// DecoderSandbox decides whether ImageMagick and ffmpeg may run when the
+	// decoder sandbox can't be fully applied.
+	DecoderSandbox sandbox.Mode
 }
 
 // Load reads configuration from environment variables. Secrets may also be
@@ -73,6 +78,9 @@ func Load() (*Config, error) {
 
 	if err := cfg.LogLevel.UnmarshalText([]byte(env("LOG_LEVEL", "info"))); err != nil {
 		return nil, fmt.Errorf("invalid LOG_LEVEL: %w", err)
+	}
+	if cfg.DecoderSandbox, err = sandbox.ParseMode(os.Getenv("DECODER_SANDBOX")); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }

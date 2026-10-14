@@ -115,6 +115,29 @@ value from a file (useful with podman secrets).
 | `FFMPEG_PATH` | `ffmpeg` | ffmpeg binary for MP4 video input; without it, images still work |
 | `RSS_INTERVAL` | `5m` | How often feeds are checked (minimum `1m`) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `DECODER_SANDBOX` | `required` | `required`: ImageMagick/ffmpeg only run fully sandboxed, otherwise image and video effects are disabled. `best-effort`: run with whatever parts of the sandbox the kernel supports |
+
+### Decoder sandbox
+
+ImageMagick and ffmpeg parse files strangers upload, so every run is
+sandboxed (no privileges or namespaces needed, so it works inside the
+hardened container too):
+
+- **Environment**: only `HOME`/`TMPDIR` (the job's own directory),
+  `MAGICK_CONFIGURE_PATH` and `LC_ALL` — never the bot's token or API keys.
+- **Files** (Landlock, Linux 5.13+): read-only access to `/nix/store` and a
+  read-only support directory (ImageMagick policy, caption font); read-write
+  access only to the job's own temporary directory. The database, secret files
+  and other jobs' files are off limits.
+- **Syscalls** (seccomp): no network sockets, ptrace, namespaces, mounts,
+  kernel modules, BPF, io_uring, userfaultfd, perf events or keyrings.
+- **Limits**: CPU time, output file size and open files; no core dumps.
+- **ImageMagick policy**: only PNG, GIF, JPEG, WebP, `caption:` and `null:`;
+  no delegates and no `@file` reads.
+
+The startup log says `decoder sandbox active` with the Landlock ABI version.
+On kernels without Landlock the effects are disabled unless
+`DECODER_SANDBOX=best-effort` is set.
 
 In the [Developer Portal](https://discord.com/developers/applications), under
 Bot → Privileged Gateway Intents, enable:
@@ -165,19 +188,58 @@ updating the bot, rebuild it yourself with `nix build .#image && docker load < r
 
 The database is kept in the `mayuri-data` volume.
 
+The container is hardened: it runs as an unprivileged user (uid/gid 10001)
+with a read-only root filesystem, a size-capped `/tmp`, no capabilities,
+`no-new-privileges`, the default seccomp profile, and process and memory limits.
+
 With [quadlet-nix](https://github.com/SEIAROTg/quadlet-nix), something like:
 
 ```nix
+# The image runs as uid/gid 10001, so the state directory must belong to it
+# (rootful podman; with rootless podman the uid is mapped into your subuid range).
+systemd.tmpfiles.rules = [ "d /var/lib/mayuri 0700 10001 10001 -" ];
+
 virtualisation.quadlet.containers.mayuri = {
   autoStart = true;
   containerConfig = {
-    image = "docker-archive:${inputs.mayuri2000.packages.${pkgs.system}.image}";
+    image = "docker-archive:${inputs.mayuri2000.packages.${pkgs.stdenv.hostPlatform.system}.image}";
     volumes = [ "/var/lib/mayuri:/data" ];
     # File containing DISCORD_TOKEN=... (keep it out of the Nix store)
     environmentFiles = [ "/run/secrets/mayuri.env" ];
     environments.BOT_PREFIX = "%";
+
+    # Hardening: the bot parses untrusted images and videos. It only writes to
+    # /data and /tmp and needs no capabilities; podman's default seccomp
+    # profile stays on (never set seccompProfile = "unconfined").
+    readOnly = true;
+    readOnlyTmpfs = false; # /tmp is mounted below with a size cap instead
+    tmpfses = [ "/tmp:size=1g,mode=1777" ];
+    dropCapabilities = [ "all" ];
+    noNewPrivileges = true;
+    pidsLimit = 512;
+    memory = "3g";
   };
 };
 ```
 
 The container keeps its state in `/data`.
+
+### Upgrading from a root image
+
+Images built before the container hardening ran as root, so existing data is
+owned by root and the bot (now uid 10001) can't write to it. It stops at startup
+with `database directory /data is not writable by uid 10001`. Change the owner once:
+
+```sh
+# Docker Compose named volume (the name is <project>_mayuri-data)
+docker compose down
+docker run --rm -v mayuri2000_mayuri-data:/data busybox chown -R 10001:10001 /data
+
+# quadlet bind mount, rootful podman (or apply the tmpfiles rule above)
+sudo chown -R 10001:10001 /var/lib/mayuri
+
+# rootless podman bind mount
+podman unshare chown -R 10001:10001 /path/to/data
+```
+
+Rolling back to an older image needs no change: root can read the files.

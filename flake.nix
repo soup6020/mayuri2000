@@ -25,7 +25,7 @@
             pname = "mayuri2000";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-frcEMdhcyKqDusy7EkA1p3ZjlQsOIdOMJn3BbF7UAvQ=";
+            vendorHash = "sha256-iPragWnlZkyVc6UesGn18nsdt3+HXGEfT+mJtoevzMU=";
             subPackages = [ "cmd/mayuri" ];
             env.CGO_ENABLED = 0;
             ldflags = [
@@ -76,10 +76,23 @@
               pkgs.cacert
               pkgs.tzdata
             ];
-            extraCommands = "mkdir -p data tmp && chmod 1777 tmp";
+            # Run as an unprivileged user (see the deployment spec). The passwd
+            # entries keep getpwuid-style lookups working; /data is owned by the
+            # user so new named volumes inherit that ownership.
+            extraCommands = ''
+              mkdir -p data tmp etc
+              chmod 1777 tmp
+              echo 'root:x:0:0::/root:/sbin/nologin' > etc/passwd
+              echo 'mayuri:x:10001:10001::/tmp:/sbin/nologin' >> etc/passwd
+              echo 'root:x:0:' > etc/group
+              echo 'mayuri:x:10001:' >> etc/group
+            '';
+            fakeRootCommands = "chown 10001:10001 data";
             config = {
+              User = "10001:10001";
               Entrypoint = [ (pkgs.lib.getExe self'.packages.default) ];
               Env = [
+                "HOME=/tmp"
                 "MAGICK_PATH=${pkgs.lib.getExe' magick "magick"}"
                 "FFMPEG_PATH=${pkgs.lib.getExe' ffmpeg "ffmpeg"}"
                 "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"

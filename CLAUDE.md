@@ -11,11 +11,14 @@ nix develop -c go test ./...        # full suite (imaging tests use real `magick
 nix develop -c golangci-lint run    # must report 0 issues; `golangci-lint fmt` fixes formatting
 nix flake check                     # package build + tests, lint, and spec validation
 nix build                           # static binary; checkPhase runs the whole test suite
-nix build .#image                   # OCI image (bot + imagemagick w/ liblqr + cacert), deployed via quadlet-nix
+nix build .#image                   # OCI image (bot + imagemagick w/ liblqr + ffmpeg + cacert), deployed via quadlet-nix
 DISCORD_TOKEN=... DEV_GUILD_IDS=<test guild> nix develop -c go run ./cmd/mayuri
 ```
 
 - Flakes only see git-tracked files: `git add` new files before `nix build`.
+- The image runs as uid/gid 10001 and is meant for a read-only root filesystem: the bot may
+  only write to `DATABASE_PATH`'s directory (`/data`) and `TMPDIR` (`/tmp`). `compose.yaml`
+  and the README quadlet example carry the hardened runtime flags; keep them in sync.
 - After changing `go.mod`/`go.sum`, update `vendorHash` in `flake.nix` (set it to
   `pkgs.lib.fakeHash`, build, copy the `got:` hash).
 - Lint config is `.golangci.yml` (v2 format): standard linters plus bodyclose, errorlint,
@@ -52,6 +55,10 @@ this file covers code layout and workflow. Capabilities: `command-framework`, `i
   `CREATE TABLE IF NOT EXISTS` in `schema`; prefixes and aliases are cached in memory.
 - `internal/tz/` — IANA zone lookup/search. `zones.go` is generated from Go's bundled tz
   database (`go generate ./internal/tz`, rerun after a Go upgrade); `time/tzdata` is embedded.
+- `internal/sandbox/` — decoder sandbox. `sandbox.Command` re-execs the bot binary as a launcher
+  (`sandbox.Main()`, first thing in `main()`) that applies rlimits, Landlock and a seccomp
+  denylist, then execs ImageMagick/ffmpeg with a fixed minimal `Env`. Packages whose tests
+  run decoders need `TestMain` → `sandbox.RunTests(m)` (see `sandbox_main_test.go`).
 - `internal/safehttp/` — HTTP client for **user-supplied URLs**: refuses loopback/private/
   link-local/CGNAT addresses at dial time (SSRF guard). Always use it (or `safehttp.NewRequest`)
   when fetching a URL a user typed; fixed third-party APIs can use a normal client.
@@ -121,6 +128,13 @@ Each `cmd.Command` is defined once and serves both slash and text-prefix invocat
 
 ## Gotchas
 
+- **Decoder sandbox**: never `exec.Command` magick/ffmpeg directly — go through
+  `imaging.runSandboxed`/`Magick.RunWith`/`FFmpeg.command`. Each job gets its own temp dir (its
+  only writable path, also its working directory); pass extra inputs as `RunWith` files and refer
+  to them by bare name. Shared read-only files (policy, font) live in the support dir
+  (`imaging/support.go`). New paths decoders need must be added deliberately in
+  `sandbox/launcher.go` after tracing with strace; the ImageMagick policy
+  (`imaging/policy/policy.xml`) only allows PNG/GIF/JPEG/WEBP/caption/null — `xc:` etc. are refused.
 - **ImageMagick safety**: always pass input via `InputSpec` (explicit sniffed coder like
   `png:-`, never bare `-`) so untrusted data can't select MVG/SVG/MSL coders, and run any
   user text through `escapeText` (`@` reads files, `%` is a property escape).

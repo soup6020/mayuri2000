@@ -2,13 +2,10 @@ package imaging
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
 	"mayuri2000/assets"
 )
@@ -93,36 +90,6 @@ func escapeText(s string) string {
 	return s
 }
 
-var (
-	fontFileOnce sync.Once
-	fontFile     string
-	fontFileErr  error
-)
-
-// arialPath writes the embedded arial font to a temp file once so magick can
-// read it.
-func arialPath() (string, error) {
-	fontFileOnce.Do(func() {
-		data, err := assets.FS.ReadFile("fonts/arial.ttf")
-		if err != nil {
-			fontFileErr = err
-			return
-		}
-		f, err := os.CreateTemp("", "mayuri-arial-*.ttf")
-		if err != nil {
-			fontFileErr = err
-			return
-		}
-		_, err = f.Write(data)
-		if err = errors.Join(err, f.Close()); err != nil {
-			fontFileErr = err
-			return
-		}
-		fontFile = f.Name()
-	})
-	return fontFile, fontFileErr
-}
-
 // CaptionOpts positions caption text. X and Y are percentages of the image
 // width and height.
 type CaptionOpts struct {
@@ -155,7 +122,7 @@ func (m *Magick) Caption(ctx context.Context, data []byte, src *Image, o Caption
 		"caption:"+escapeText(o.Text), ")",
 		"-geometry", fmt.Sprintf("+%d+%d", left, top),
 		"-layers", "composite")
-	return m.finish(ctx, data, src, args)
+	return m.finish(ctx, data, src, nil, args)
 }
 
 // WatermarkOpts positions a watermark. X and Y are percentages of the image
@@ -182,16 +149,8 @@ func (m *Magick) Watermark(ctx context.Context, data []byte, src *Image, o Water
 	if err != nil {
 		return nil, "", err
 	}
-	f, err := os.CreateTemp("", "mayuri-mark-*")
-	if err != nil {
-		return nil, "", err
-	}
-	defer os.Remove(f.Name())
-	_, err = f.Write(mark)
-	if err = errors.Join(err, f.Close()); err != nil {
-		return nil, "", err
-	}
-	markSpec = strings.TrimSuffix(markSpec, "-") + f.Name() + "[0]"
+	// The mark is written into the job directory as "mark" (see finish).
+	markSpec = strings.TrimSuffix(markSpec, "-") + "mark[0]"
 
 	w, h := src.First().Rect.Dx(), src.First().Rect.Dy()
 	// NotSoBot shrank the base to ~256px; scale the mark instead so its
@@ -208,15 +167,15 @@ func (m *Magick) Watermark(ctx context.Context, data []byte, src *Image, o Water
 		"-alpha", "set", "-channel", "A", "-evaluate", "multiply", strconv.FormatFloat(opacity, 'f', 2, 64), "+channel", ")",
 		"-geometry", fmt.Sprintf("+%d+%d", w*o.X/100, h*o.Y/100),
 		"-layers", "composite")
-	return m.finish(ctx, data, src, args)
+	return m.finish(ctx, data, src, map[string][]byte{"mark": mark}, args)
 }
 
-func (m *Magick) finish(ctx context.Context, data []byte, src *Image, args []string) ([]byte, string, error) {
+func (m *Magick) finish(ctx context.Context, data []byte, src *Image, files map[string][]byte, args []string) ([]byte, string, error) {
 	if src.Animated() {
-		out, err := m.Run(ctx, data, append(args, "-layers", "optimize", "-loop", "0", "gif:-")...)
+		out, err := m.RunWith(ctx, data, files, append(args, "-layers", "optimize", "-loop", "0", "gif:-")...)
 		return out, "gif", err
 	}
-	out, err := m.Run(ctx, data, append(args, "-depth", "8", "png:-")...)
+	out, err := m.RunWith(ctx, data, files, append(args, "-depth", "8", "png:-")...)
 	return out, "png", err
 }
 
@@ -246,7 +205,7 @@ func (m *Magick) Wall(ctx context.Context, data []byte, src *Image) ([]byte, str
 		"-virtual-pixel", "tile", "-background", "none",
 		"-set", "option:distort:viewport", "640x400", "+repage",
 		"-distort", "Perspective", points, "+repage")
-	return m.finish(ctx, data, src, args)
+	return m.finish(ctx, data, src, nil, args)
 }
 
 // WatercolorOpts mirrors upstream NotSoBot's watercolor parameters.

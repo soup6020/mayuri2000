@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"mayuri2000/internal/sandbox"
 )
 
 // Video input limits: the first MaxVideoSeconds, at most MaxVideoFPS, scaled
@@ -57,7 +59,7 @@ type FFmpeg struct {
 // NewFFmpeg probes the ffmpeg binary.
 func NewFFmpeg(ctx context.Context, path string) (*FFmpeg, error) {
 	f := &FFmpeg{Path: path}
-	if err := exec.CommandContext(ctx, path, "-hide_banner", "-version").Run(); err != nil {
+	if _, err := runSandboxed(ctx, nil, nil, path, "-hide_banner", "-version"); err != nil {
 		return f, fmt.Errorf("running %s -version: %w", path, err)
 	}
 	f.Available = true
@@ -71,14 +73,22 @@ func inputArgs(path string) []string {
 	return []string{"-protocol_whitelist", "file,pipe", "-f", "mov", "-i", path}
 }
 
-func (f *FFmpeg) command(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, f.Path, append([]string{"-hide_banner", "-loglevel", "error"}, args...)...)
+// command runs ffmpeg in the decoder sandbox with dir (the job's own temp
+// directory, holding its input and output files) as the only writable path.
+func (f *FFmpeg) command(ctx context.Context, dir string, args ...string) (*exec.Cmd, error) {
+	cmd, err := sandbox.Command(ctx, dir, f.Path, append([]string{"-hide_banner", "-loglevel", "error"}, args...)...)
+	if err != nil {
+		return nil, err
+	}
 	cmd.WaitDelay = 2 * time.Second
-	return cmd
+	return cmd, nil
 }
 
-func (f *FFmpeg) run(ctx context.Context, stdin io.Reader, args ...string) ([]byte, error) {
-	cmd := f.command(ctx, args...)
+func (f *FFmpeg) run(ctx context.Context, dir string, stdin io.Reader, args ...string) ([]byte, error) {
+	cmd, err := f.command(ctx, dir, args...)
+	if err != nil {
+		return nil, err
+	}
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
@@ -107,7 +117,10 @@ type probeResult struct {
 // probe inspects in.mp4. ffmpeg with no output exits non-zero after
 // printing the stream summary, which is what we parse.
 func (f *FFmpeg) probe(ctx context.Context, path string) (probeResult, error) {
-	cmd := exec.CommandContext(ctx, f.Path, append([]string{"-hide_banner", "-nostdin"}, inputArgs(path)...)...)
+	cmd, err := sandbox.Command(ctx, filepath.Dir(path), f.Path, append([]string{"-hide_banner", "-nostdin"}, inputArgs(path)...)...)
+	if err != nil {
+		return probeResult{}, err
+	}
 	cmd.WaitDelay = 2 * time.Second
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -162,7 +175,7 @@ func DecodeVideo(ctx context.Context, f *FFmpeg, data []byte, gifLike bool) (*Im
 	args = append(args, "-t", strconv.Itoa(MaxVideoSeconds), "-an",
 		"-vf", fmt.Sprintf("fps=%s,%s", strconv.FormatFloat(fps, 'f', 3, 64), scale),
 		"-f", "image2pipe", "-c:v", "png", "pipe:1")
-	out, err := f.run(ctx, nil, args...)
+	out, err := f.run(ctx, dir, nil, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +196,7 @@ func DecodeVideo(ctx context.Context, f *FFmpeg, data []byte, gifLike bool) (*Im
 		audio := filepath.Join(dir, "audio.m4a")
 		aargs := append([]string{"-nostdin"}, inputArgs(in)...)
 		aargs = append(aargs, "-t", strconv.Itoa(MaxVideoSeconds), "-vn", "-c:a", "copy", "-f", "mp4", audio)
-		if _, err := f.run(ctx, nil, aargs...); err == nil {
+		if _, err := f.run(ctx, dir, nil, aargs...); err == nil {
 			if b, err := os.ReadFile(audio); err == nil && len(b) > 0 {
 				info.Audio = b
 			}
@@ -262,7 +275,7 @@ func encodeMP4(ctx context.Context, m *Image) ([]byte, error) {
 			"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
 			"-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", "-preset", "veryfast",
 			"-movflags", "+faststart", "-f", "mp4", "-y", out)
-		if _, err := v.ff.run(ctx, bytes.NewReader(raw.Bytes()), a...); err != nil {
+		if _, err := v.ff.run(ctx, dir, bytes.NewReader(raw.Bytes()), a...); err != nil {
 			return nil, err
 		}
 		return os.ReadFile(out)

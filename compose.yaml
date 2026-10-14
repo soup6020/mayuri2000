@@ -18,8 +18,23 @@ services:
     env_file:
       - .env
     # SQLite database (prefixes, aliases, feeds, reminders, stats) lives in /data.
+    # The image runs as uid/gid 10001; data from an older root image needs a
+    # one-time chown (see "Upgrading from a root image" in the README).
     volumes:
       - mayuri-data:/data
+
+    # Hardening: the bot parses untrusted images and videos, so contain it.
+    # It only writes to /data and /tmp, needs no capabilities (outbound
+    # connections only), and keeps the runtime's default seccomp profile.
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777 # ffmpeg/ImageMagick scratch space; counts toward mem_limit
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512 # threads + a few concurrent magick/ffmpeg jobs; stops fork bombs
+    mem_limit: 3g # covers several image jobs plus /tmp; raise if large jobs get OOM-killed
 
 volumes:
   mayuri-data:

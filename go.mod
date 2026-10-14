@@ -7,10 +7,13 @@ require (
 	github.com/disgoorg/omit v1.0.0
 	github.com/disgoorg/snowflake/v2 v2.0.3
 	github.com/disintegration/imaging v1.6.2
+	github.com/elastic/go-seccomp-bpf v1.6.0
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
+	github.com/landlock-lsm/go-landlock v0.10.1
 	github.com/mmcdole/gofeed v1.5.0
 	golang.org/x/image v0.46.0
 	golang.org/x/net v0.59.0
+	golang.org/x/sys v0.48.0
 	modernc.org/sqlite v1.59.0
 )
 
@@ -27,8 +30,8 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sasha-s/go-csync v0.0.0-20240107134140-fcbab37b09ad // indirect
 	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
+	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

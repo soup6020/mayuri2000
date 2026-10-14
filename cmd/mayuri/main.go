@@ -24,10 +24,13 @@ import (
 	"mayuri2000/internal/modules/reminders"
 	"mayuri2000/internal/modules/search"
 	"mayuri2000/internal/rss"
+	"mayuri2000/internal/sandbox"
 	"mayuri2000/internal/store"
 )
 
 func main() {
+	// When started as the decoder sandbox launcher this never returns.
+	sandbox.Main()
 	if err := run(); err != nil {
 		slog.Error("fatal", "err", err)
 		os.Exit(1)
@@ -42,6 +45,9 @@ func run() error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	slog.SetDefault(log)
 
+	if err := checkDataDir(cfg.DatabasePath); err != nil {
+		return err
+	}
 	st, err := store.Open(context.Background(), cfg.DatabasePath)
 	if err != nil {
 		return err
@@ -52,17 +58,8 @@ func run() error {
 		}
 	}()
 
-	magick, err := imaging.NewMagick(context.Background(), cfg.MagickPath)
-	if err != nil {
-		log.Warn("ImageMagick unavailable; magik, caption and watermark are disabled", "err", err)
-	} else if !magick.LiquidRescale {
-		log.Warn("ImageMagick lacks liquid rescale (liblqr) support; magik is disabled")
-	}
-
-	ff, err := imaging.NewFFmpeg(context.Background(), cfg.FFmpegPath)
-	if err != nil {
-		log.Warn("ffmpeg unavailable; MP4 video input is disabled", "err", err)
-	}
+	defer imaging.CleanupSupport()
+	magick, ff := startDecoders(context.Background(), cfg, log, sandbox.Probe)
 
 	registry := cmd.NewRegistry(log, st, cfg.Prefix)
 	registry.Add(core.Commands()...)
