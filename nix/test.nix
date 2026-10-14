@@ -53,7 +53,17 @@ pkgs.testers.runNixOSTest {
           address = "/discord.com/${discordIP}";
         };
       };
-      networking.firewall.enable = false;
+      # Keep the host firewall on, with the nftables backend: there podman's own
+      # accept rules live in a separate table and can't override NixOS's drop,
+      # so the module must open DNS on its network itself (with iptables,
+      # podman's rules land in the same chain and hide a missing rule). The
+      # test servers below are reached from the container.
+      networking.nftables.enable = true;
+      networking.firewall.allowedTCPPorts = [
+        443
+        8000
+        8080
+      ];
 
       # A "public" Discord that accepts connections and never answers, and a
       # LAN service the container must not reach.

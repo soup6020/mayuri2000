@@ -182,7 +182,9 @@ for secrets, agenix:
 # flake.nix inputs
 mayuri2000 = {
   url = "git+ssh://…/Mayuri2000";
-  inputs.nixpkgs.follows = "nixpkgs";       # optional: build against your nixpkgs
+  # Don't make its nixpkgs follow a stable channel: the bot needs the Go
+  # version from its own (unstable) lock. The image it builds is
+  # self-contained, so a stable host runs it fine.
   inputs.quadlet-nix.follows = "quadlet-nix"; # only used by Mayuri2000's own tests
 };
 ```
@@ -197,12 +199,14 @@ mayuri2000 = {
     inputs.mayuri2000.nixosModules.default
   ];
 
-  # The file holds only the token. The module creates the mayuri2000 user
-  # (uid/gid 10001, the uid the bot runs as), which must be able to read it.
+  # The file holds only the token, readable by uid/gid 10001 (the module's
+  # mayuri2000 user, which the bot runs as). Use the numeric ids: agenix may
+  # decrypt before the user exists, and chown by name then fails with
+  # "invalid user".
   age.secrets.mayuri-token = {
     file = ./secrets/mayuri-token.age;
-    owner = "mayuri2000";
-    group = "mayuri2000";
+    owner = "10001";
+    group = "10001";
   };
 
   services.mayuri2000 = {

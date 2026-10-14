@@ -109,7 +109,7 @@ Alternatives considered:
 
 ## Migration Plan
 
-1. In the colmena hive: add the `mayuri2000` and `quadlet-nix` inputs, import both modules plus agenix, and define `age.secrets.mayuri-token` with `owner = "mayuri2000"`.
+1. In the colmena hive: add the `mayuri2000` and `quadlet-nix` inputs, import both modules plus agenix, and define `age.secrets.mayuri-token` with `owner = "10001"; group = "10001";`. Numeric ids, because agenix can decrypt before NixOS creates the `mayuri2000` user; owning by name then failed with "invalid user" on the real host.
 2. Enable `services.mayuri2000` with `tokenFile = config.age.secrets.mayuri-token.path`.
 3. `colmena apply`.
 4. To move the current Compose data over, stop Compose and copy the volume's `mayuri.db*` into `/var/lib/mayuri2000` (owned by 10001).

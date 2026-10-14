@@ -57,8 +57,9 @@ in
       description = ''
         File containing only the Discord bot token, readable by the `mayuri2000`
         user (uid 10001). A string, so the secret is never copied into the Nix
-        store; with agenix use `config.age.secrets.<name>.path` and set the
-        secret's owner to `mayuri2000`.
+        store. With agenix use `config.age.secrets.<name>.path` and set the
+        secret's `owner` and `group` to `"10001"`: numeric, because agenix may
+        decrypt before the `mayuri2000` user exists.
       '';
     };
     geniusTokenFile = secretFileOption "Optional file containing a Genius API token.";
@@ -150,6 +151,16 @@ in
     virtualisation.quadlet.networks.mayuri2000.networkConfig = {
       subnets = [ cfg.subnet ];
       gateways = [ cfg.gateway ];
+      interfaceName = "mayuri2000";
+    };
+    # Let the container reach podman's DNS server on the gateway. NixOS opens
+    # this only for the default network's podman0; without it the host
+    # firewall drops the queries and the bot can't resolve discord.com.
+    networking.firewall = lib.mkIf ((config.networking.firewall.backend or "") != "firewalld") {
+      interfaces.mayuri2000 = {
+        allowedUDPPorts = [ 53 ];
+        allowedTCPPorts = [ 53 ];
+      };
     };
 
     virtualisation.quadlet.containers.mayuri2000 = {

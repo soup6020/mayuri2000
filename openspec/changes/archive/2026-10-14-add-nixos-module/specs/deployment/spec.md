@@ -15,7 +15,7 @@ The flake SHALL export `nixosModules.default` providing `services.mayuri2000`, w
 The module SHALL pass the bot token and optional API keys only as read-only files mounted into the container with `*_FILE` variables, so no secret appears in an environment variable, unit file or the Nix store. Setting `DISCORD_TOKEN`, `GENIUS_TOKEN` or `TENOR_API_KEY` in the module's `environment` MUST fail evaluation.
 
 #### Scenario: agenix token
-- **WHEN** `tokenFile` is an agenix secret owned by `mayuri2000`
+- **WHEN** `tokenFile` is an agenix secret owned by uid/gid 10001 (the `mayuri2000` user)
 - **THEN** the bot reads the token from the mounted file and the container's environment has no token value
 
 #### Scenario: Token in environment

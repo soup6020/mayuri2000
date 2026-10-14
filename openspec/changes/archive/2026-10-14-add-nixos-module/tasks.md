@@ -19,4 +19,4 @@
 
 ## 4. Manual
 
-- [ ] 4.1 Deploy to the colmena host with an agenix-managed token (after moving data if wanted); verify the bot comes online, image commands work, and `systemctl status mayuri2000` shows the hardened container
+- [x] 4.1 Deploy to the colmena host with an agenix-managed token (after moving data if wanted); verify the bot comes online, image commands work, and `systemctl status mayuri2000` shows the hardened container
