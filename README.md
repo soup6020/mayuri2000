@@ -167,9 +167,100 @@ DISCORD_TOKEN=... DEV_GUILD_IDS=<test guild> go run ./cmd/mayuri
 
 ```sh
 nix build            # the static binary
-nix build .#image    # OCI image archive (bot + ImageMagick + CA certs)
+nix build .#image    # OCI image archive (bot + ImageMagick + ffmpeg + CA certs)
 podman load < result # or: docker load < result
 ```
+
+### NixOS module (colmena, agenix, quadlet-nix)
+
+The flake exports `nixosModules.default`, which runs the image as a hardened
+rootful podman container through [quadlet-nix](https://github.com/SEIAROTg/quadlet-nix).
+Your host flake (e.g. a colmena hive) imports it alongside quadlet-nix and,
+for secrets, agenix:
+
+```nix
+# flake.nix inputs
+mayuri2000 = {
+  url = "git+ssh://…/Mayuri2000";
+  inputs.nixpkgs.follows = "nixpkgs";       # optional: build against your nixpkgs
+  inputs.quadlet-nix.follows = "quadlet-nix"; # only used by Mayuri2000's own tests
+};
+```
+
+```nix
+# the host's configuration
+{ config, inputs, ... }:
+{
+  imports = [
+    inputs.agenix.nixosModules.default
+    inputs.quadlet-nix.nixosModules.quadlet
+    inputs.mayuri2000.nixosModules.default
+  ];
+
+  # The file holds only the token. The module creates the mayuri2000 user
+  # (uid/gid 10001, the uid the bot runs as), which must be able to read it.
+  age.secrets.mayuri-token = {
+    file = ./secrets/mayuri-token.age;
+    owner = "mayuri2000";
+    group = "mayuri2000";
+  };
+
+  services.mayuri2000 = {
+    enable = true;
+    tokenFile = config.age.secrets.mayuri-token.path;
+    environment.BOT_PREFIX = "%";
+  };
+}
+```
+
+| Option | Default | |
+|---|---|---|
+| `tokenFile` | – | File containing only the bot token (required) |
+| `geniusTokenFile`, `tenorApiKeyFile` | `null` | Optional API key files |
+| `environment` | `{ }` | Non-secret settings (`BOT_PREFIX`, `DEV_GUILD_IDS`, `LOG_LEVEL`, `RSS_INTERVAL`, `DECODER_SANDBOX`); secrets here fail evaluation |
+| `dataDir` | `/var/lib/mayuri2000` | Database directory (mode 0700, owned by `mayuri2000`) |
+| `memory`, `pidsLimit`, `tmpSize` | `3g`, `512`, `1g` | Container limits |
+| `restrictNetwork` | `true` | Block connections to loopback, private, link-local, CGNAT and multicast addresses (your LAN) |
+| `subnet`, `gateway` | `10.89.173.0/24`, `.1` | The container's dedicated podman network; its gateway is the DNS server |
+| `image` | this flake's image | OCI image archive to run |
+
+What it sets up:
+
+- **Secrets as files only**: each `*File` is mounted read-only at
+  `/run/secrets/…` in the container and passed as `DISCORD_TOKEN_FILE` etc.
+  The token is never in an environment variable, unit file or the Nix store.
+- **Hardening**: the same as `compose.yaml` (non-root uid 10001, read-only root,
+  size-capped `/tmp`, no capabilities, `no-new-privileges`, default seccomp,
+  limits) plus the decoder sandbox.
+- **No LAN access** (`restrictNetwork`): systemd's IP filtering on the unit
+  drops the container's packets to private and local addresses (connections
+  time out); only the container network's DNS server on the gateway is
+  allowed. Public addresses, including Discord, work normally.
+- **Updates**: the unit refers to the image by its Nix store path, so after
+  `nix flake update mayuri2000`, `colmena apply` restarts the bot only when the
+  image changed.
+
+Day to day:
+
+```sh
+agenix -e secrets/mayuri-token.age          # rotate the token, deploy, then:
+ssh host systemctl restart mayuri2000       # the mounted secret is only re-read on restart
+journalctl -u mayuri2000 -f                 # logs (look for "decoder sandbox active")
+```
+
+Moving data from Docker Compose: stop Compose, then copy the volume's database
+into `dataDir` before the bot first starts there (or stop it with
+`systemctl stop mayuri2000`):
+
+```sh
+docker compose down
+docker run --rm -v mayuri2000_mayuri-data:/data:ro busybox tar -C /data -cf - . \
+  | ssh host 'sudo tar -C /var/lib/mayuri2000 -xf - && sudo chown -R 10001:10001 /var/lib/mayuri2000'
+```
+
+`nix flake check` runs the module in a NixOS VM (`checks.nixos-module`,
+x86_64-linux with KVM): user and ownership, hardening, the token staying out of
+the environment, the decoder sandbox, DNS, and that the LAN is unreachable.
 
 ### Docker Compose
 
@@ -192,37 +283,6 @@ The container is hardened: it runs as an unprivileged user (uid/gid 10001)
 with a read-only root filesystem, a size-capped `/tmp`, no capabilities,
 `no-new-privileges`, the default seccomp profile, and process and memory limits.
 
-With [quadlet-nix](https://github.com/SEIAROTg/quadlet-nix), something like:
-
-```nix
-# The image runs as uid/gid 10001, so the state directory must belong to it
-# (rootful podman; with rootless podman the uid is mapped into your subuid range).
-systemd.tmpfiles.rules = [ "d /var/lib/mayuri 0700 10001 10001 -" ];
-
-virtualisation.quadlet.containers.mayuri = {
-  autoStart = true;
-  containerConfig = {
-    image = "docker-archive:${inputs.mayuri2000.packages.${pkgs.stdenv.hostPlatform.system}.image}";
-    volumes = [ "/var/lib/mayuri:/data" ];
-    # File containing DISCORD_TOKEN=... (keep it out of the Nix store)
-    environmentFiles = [ "/run/secrets/mayuri.env" ];
-    environments.BOT_PREFIX = "%";
-
-    # Hardening: the bot parses untrusted images and videos. It only writes to
-    # /data and /tmp and needs no capabilities; podman's default seccomp
-    # profile stays on (never set seccompProfile = "unconfined").
-    readOnly = true;
-    readOnlyTmpfs = false; # /tmp is mounted below with a size cap instead
-    tmpfses = [ "/tmp:size=1g,mode=1777" ];
-    dropCapabilities = [ "all" ];
-    noNewPrivileges = true;
-    pidsLimit = 512;
-    memory = "3g";
-  };
-};
-```
-
-The container keeps its state in `/data`.
 
 ### Upgrading from a root image
 
@@ -235,8 +295,8 @@ with `database directory /data is not writable by uid 10001`. Change the owner o
 docker compose down
 docker run --rm -v mayuri2000_mayuri-data:/data busybox chown -R 10001:10001 /data
 
-# quadlet bind mount, rootful podman (or apply the tmpfiles rule above)
-sudo chown -R 10001:10001 /var/lib/mayuri
+# NixOS module data directory
+sudo chown -R 10001:10001 /var/lib/mayuri2000
 
 # rootless podman bind mount
 podman unshare chown -R 10001:10001 /path/to/data

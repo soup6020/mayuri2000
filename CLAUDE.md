@@ -11,14 +11,15 @@ nix develop -c go test ./...        # full suite (imaging tests use real `magick
 nix develop -c golangci-lint run    # must report 0 issues; `golangci-lint fmt` fixes formatting
 nix flake check                     # package build + tests, lint, and spec validation
 nix build                           # static binary; checkPhase runs the whole test suite
-nix build .#image                   # OCI image (bot + imagemagick w/ liblqr + ffmpeg + cacert), deployed via quadlet-nix
+nix build .#image                   # OCI image (bot + imagemagick w/ liblqr + ffmpeg + cacert)
+nix build .#checks.x86_64-linux.nixos-module -L   # NixOS module VM test (needs KVM)
 DISCORD_TOKEN=... DEV_GUILD_IDS=<test guild> nix develop -c go run ./cmd/mayuri
 ```
 
 - Flakes only see git-tracked files: `git add` new files before `nix build`.
 - The image runs as uid/gid 10001 and is meant for a read-only root filesystem: the bot may
   only write to `DATABASE_PATH`'s directory (`/data`) and `TMPDIR` (`/tmp`). `compose.yaml`
-  and the README quadlet example carry the hardened runtime flags; keep them in sync.
+  and the NixOS module (`nix/module.nix`) carry the hardened runtime flags; keep them in sync.
 - After changing `go.mod`/`go.sum`, update `vendorHash` in `flake.nix` (set it to
   `pkgs.lib.fakeHash`, build, copy the `got:` hash).
 - Lint config is `.golangci.yml` (v2 format): standard linters plus bodyclose, errorlint,
@@ -47,6 +48,12 @@ this file covers code layout and workflow. Capabilities: `command-framework`, `i
 
 ## Layout
 
+- `nix/` — `module.nix` (`nixosModules.default`, `services.mayuri2000`: the image as a hardened
+  quadlet-nix container, secrets only as mounted `*_FILE`s, `restrictNetwork` via systemd
+  `IPAddressDeny` on the unit plus a dedicated podman network whose gateway is the allowed
+  DNS server), `test.nix` (VM test) and `assertion-check.nix`. The module doesn't import
+  quadlet-nix (hosts do); the flake's `quadlet-nix` input is only for the tests. Deployment
+  (colmena, agenix) lives in the user's own flake, not here.
 - `cmd/mayuri/` — main: config → store → magick probe → registry → `Validate()` → sync → gateway.
   Tests here build the full registry (`testRegistry`) and drive commands end to end.
 - `internal/cmd/` — the command framework (see below).
