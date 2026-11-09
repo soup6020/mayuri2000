@@ -1,6 +1,6 @@
 # Mayuri2000
 
-Discord bot in Go on [disgo](https://github.com/disgoorg/disgo) (v0.19), replacing a
+Discord bot in Go on [disgo](https://github.com/disgoorg/disgo) (v0.20), replacing a
 Red-DiscordBot instance/
 User-facing docs are in `README.md`.
 
@@ -54,6 +54,10 @@ this file covers code layout and workflow. Capabilities: `command-framework`, `i
   DNS server), `test.nix` (VM test) and `assertion-check.nix`. The module doesn't import
   quadlet-nix (hosts do); the flake's `quadlet-nix` input is only for the tests. Deployment
   (colmena, agenix) lives in the user's own flake, not here.
+  The module opens DNS (53) in the host firewall on its network's interface (`mayuri2000`):
+  with `networking.nftables.enable`, podman's own accept rules can't override NixOS's drop
+  (NixOS only does this for `podman0`). The VM test uses nftables for that reason; with the
+  iptables backend the bug is masked.
 - `cmd/mayuri/` — main: config → store → magick probe → registry → `Validate()` → sync → gateway.
   Tests here build the full registry (`testRegistry`) and drive commands end to end.
 - `internal/cmd/` — the command framework (see below).

@@ -38,7 +38,7 @@
               pname = "mayuri2000";
               version = "0.1.0";
               src = ./.;
-              vendorHash = "sha256-iPragWnlZkyVc6UesGn18nsdt3+HXGEfT+mJtoevzMU=";
+              vendorHash = "sha256-fxwdeHu0ywDkpl5zOyUvG0mhfeaLFbMIfZJhVBeZXwA=";
               subPackages = [ "cmd/mayuri" ];
               env.CGO_ENABLED = 0;
               ldflags = [
